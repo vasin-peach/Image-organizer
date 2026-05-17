@@ -48,18 +48,16 @@ function SortableCell({
   cell,
   img,
   isDragging,
-  isManual,
   onCropClick,
 }: {
   cell: CellRect;
   img: ImageEntry;
   isDragging: boolean;
-  isManual: boolean;
   onCropClick: (id: string) => void;
 }) {
-  const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id: img.id });
+  const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition } = useSortable({ id: img.id });
 
-  const style: React.CSSProperties = {
+  const cellStyle: React.CSSProperties = {
     position: 'absolute',
     left: cell.x,
     top: cell.y,
@@ -67,41 +65,53 @@ function SortableCell({
     height: cell.h,
     transform: CSS.Transform.toString(transform),
     transition,
-    cursor: isManual ? (isDragging ? 'grabbing' : 'grab') : 'crosshair',
     opacity: isDragging ? 0 : 1,
     zIndex: isDragging ? 0 : 1,
   };
 
-  if (isManual) {
-    return (
-      <div
-        ref={setNodeRef}
-        style={style}
-        {...attributes}
-        {...listeners}
-        className="group"
-      >
-        {/* Drag handle hint on hover */}
-        <div className="absolute inset-0 border-2 border-transparent group-hover:border-indigo-400/50 transition-colors rounded-sm pointer-events-none" />
-        <div className="absolute top-1 left-1/2 -translate-x-1/2 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
-          <div className="bg-black/60 rounded px-1.5 py-0.5 flex items-center gap-1">
-            <svg className="w-3 h-3 text-white/70" fill="currentColor" viewBox="0 0 20 20">
-              <path d="M7 2a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zM7 8a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm-6 6a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4z" />
-            </svg>
-            <span className="text-[9px] text-white/60">drag</span>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // Non-manual: transparent click catcher for crop modal
   return (
     <div
-      style={style}
-      onClick={() => onCropClick(img.id)}
-      title="Click to adjust crop"
-    />
+      ref={setNodeRef}
+      style={cellStyle}
+      {...attributes}
+      className="group"
+    >
+      {/* Click to crop — whole cell except the drag handle */}
+      <div
+        className="absolute inset-0 cursor-crosshair"
+        onClick={() => onCropClick(img.id)}
+        title="Click to adjust crop"
+      />
+
+      {/* Hover border */}
+      <div className="absolute inset-0 border-2 border-transparent group-hover:border-white/20 transition-colors rounded-sm pointer-events-none" />
+
+      {/* Drag handle — top-center, only this triggers drag */}
+      <div
+        ref={setActivatorNodeRef}
+        {...listeners}
+        className="absolute top-1 left-1/2 -translate-x-1/2 z-10 opacity-0 group-hover:opacity-100 transition-opacity cursor-grab active:cursor-grabbing"
+        title="Drag to reorder"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="bg-black/70 border border-white/10 rounded px-2 py-0.5 flex items-center gap-1 shadow-lg">
+          <svg className="w-2.5 h-2.5 text-white/60" fill="currentColor" viewBox="0 0 20 20">
+            <path d="M7 2a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zM7 8a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm-6 6a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4z" />
+          </svg>
+          <span className="text-[9px] text-white/50 select-none">drag</span>
+        </div>
+      </div>
+
+      {/* Crop hint — bottom-center */}
+      <div className="absolute bottom-1 left-1/2 -translate-x-1/2 z-10 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
+        <div className="bg-black/70 border border-white/10 rounded px-2 py-0.5 flex items-center gap-1 shadow-lg">
+          <svg className="w-2.5 h-2.5 text-white/60" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536M9 13l6.586-6.586a2 2 0 012.828 2.828L11.828 15.828a4 4 0 01-2.828 1.172H7v-2a4 4 0 011.172-2.828z" />
+          </svg>
+          <span className="text-[9px] text-white/50 select-none">crop</span>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -281,7 +291,6 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
                     cell={cell}
                     img={img}
                     isDragging={activeDragId === img.id}
-                    isManual={true}
                     onCropClick={handleCropClick}
                   />
                 );

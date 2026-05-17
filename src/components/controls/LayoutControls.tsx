@@ -147,10 +147,13 @@ function Row({
 }) {
   return (
     <div className="flex items-center justify-between h-7">
-      <span className={`text-xs ${disabled?'text-white/25':'text-white/55'}`}>{label}</span>
+      <span className={`text-xs ${disabled ? 'text-white/25' : 'text-white/60'}`}>{label}</span>
       <div className="flex items-center gap-1">
         {disabled ? (
-          <span className="text-xs font-mono text-white/30 w-16 text-right">{Math.round(value)}</span>
+          <div className="flex items-center gap-1 w-16 justify-end">
+            <span className="text-[9px] text-white/20 italic">auto</span>
+            <span className="text-xs font-mono text-white/35">{Math.round(value)}</span>
+          </div>
         ) : (
           <input
             type="number" value={Math.round(value*100)/100} min={min} max={max} step={step}
@@ -158,7 +161,7 @@ function Row({
             className="w-16 bg-[#1a1c26] border border-white/10 rounded-md px-2 py-0.5 text-xs text-right text-white outline-none focus:border-indigo-500/80 transition-colors"
           />
         )}
-        {unit && <span className="text-[10px] text-white/25 w-5">{unit}</span>}
+        {unit && <span className={`text-[10px] w-5 ${disabled ? 'text-white/20' : 'text-white/30'}`}>{unit}</span>}
       </div>
     </div>
   );
@@ -285,13 +288,17 @@ export default function LayoutControls() {
           <Toggle label="Manual Rows" value={layout.rowsManual} onChange={v=>solve({rowsManual:v})}/>
           {layout.rowsManual ? (
             <>
-              <Row label="Rows"             value={layout.rows}   min={1} max={200} onChange={v=>solve({rows:v,rowsManual:true})}/>
-              <Row label="Columns"          value={solved.cols}   min={1} max={200} onChange={()=>{}} disabled/>
+              <Row label="Rows"    value={layout.rows}  min={1} max={200} onChange={v=>solve({rows:v,rowsManual:true})}/>
+              <Row label="Columns" value={solved.cols}  min={1} max={200} onChange={()=>{}} disabled/>
             </>
           ) : (
             <>
-              <Row label="Columns"          value={layout.cols}   min={1} max={50}  onChange={v=>solve({cols:v})}/>
-              <Row label="Rows"             value={solved.rows}   min={1} max={200} onChange={()=>{}} disabled/>
+              {layout.lockMode === 'auto-cols' ? (
+                <Row label="Columns" value={solved.cols} min={1} max={50} onChange={()=>{}} disabled/>
+              ) : (
+                <Row label="Columns" value={layout.cols} min={1} max={50} onChange={v=>solve({cols:v})}/>
+              )}
+              <Row label="Rows" value={solved.rows} min={1} max={200} onChange={()=>{}} disabled/>
             </>
           )}
         </div>
@@ -303,15 +310,41 @@ export default function LayoutControls() {
       <div>
         <SectionLabel>Cell Size</SectionLabel>
         <div className="space-y-0.5">
-          <Row label="Width"  value={layout.cellW} min={10} max={4000} unit="px"
-            disabled={layout.lockMode==='canvas'||layout.lockMode==='aspect'}
-            onChange={v=>solve({cellW:v})}/>
-          <Row label="Height" value={layout.cellH} min={10} max={4000} unit="px"
-            disabled={layout.lockMode==='canvas'}
-            onChange={v=>solve({cellH:v})}/>
-          {layout.lockMode==='aspect'&&(
+
+          {/* Width — hidden in Grid Aspect (each image has own width) */}
+          {layout.mode !== 'grid-aspect' && (
+            <Row
+              label={layout.mode === 'mosaic' ? 'Column Width' : 'Width'}
+              value={solved.cellW}
+              min={10} max={4000} unit="px"
+              disabled={layout.lockMode === 'canvas' || layout.lockMode === 'aspect'}
+              onChange={v => solve({cellW: v})}
+            />
+          )}
+
+          {/* Height — hidden in Mosaic (each image keeps its own aspect ratio) */}
+          {layout.mode !== 'mosaic' && (
+            <Row
+              label={layout.mode === 'grid-aspect' ? 'Row Height' : 'Height'}
+              value={solved.cellH}
+              min={10} max={4000} unit="px"
+              disabled={layout.lockMode === 'canvas'}
+              onChange={v => solve({cellH: v})}
+            />
+          )}
+
+          {/* Aspect ratio input — only for 'aspect' lock mode */}
+          {layout.lockMode === 'aspect' && (
             <Row label="Aspect W/H" value={layout.cellAspect} min={0.1} max={10} step={0.01}
-              onChange={v=>solve({cellAspect:v})}/>
+              onChange={v => solve({cellAspect: v})}/>
+          )}
+
+          {/* Context note */}
+          {layout.mode === 'mosaic' && (
+            <p className="text-[10px] text-white/25 pt-0.5">ความสูงของแต่ละภาพตาม aspect ratio ต้นฉบับ</p>
+          )}
+          {layout.mode === 'grid-aspect' && (
+            <p className="text-[10px] text-white/25 pt-0.5">ความกว้างของแต่ละภาพตาม aspect ratio ต้นฉบับ</p>
           )}
         </div>
       </div>
@@ -342,6 +375,9 @@ export default function LayoutControls() {
             <Row label="Height" value={solved.canvasH} min={100} max={20000} unit="px"
               disabled={layout.lockMode==='cell'||layout.lockMode==='aspect'}
               onChange={v=>{solve({canvasH:v});const[rw,rh]=toSimpleRatio(solved.canvasW,v);setRatioW(rw);setRatioH(rh);}}/>
+            {layout.lockMode==='cell'&&(
+              <p className="text-[10px] text-white/25 pt-0.5">Canvas คำนวณจาก Cell × Cols + Gap</p>
+            )}
           </div>
         ) : (
           <div className="space-y-2">
