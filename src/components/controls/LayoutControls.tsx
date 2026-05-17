@@ -367,7 +367,8 @@ export default function LayoutControls() {
           </div>
         </div>
 
-        {canvasSizeMode==='px' ? (
+        {/* ── px mode ── */}
+        {canvasSizeMode==='px' && (
           <div className="space-y-0.5">
             <Row label="Width"  value={solved.canvasW} min={100} max={20000} unit="px"
               disabled={layout.lockMode==='cell'}
@@ -375,53 +376,92 @@ export default function LayoutControls() {
             <Row label="Height" value={solved.canvasH} min={100} max={20000} unit="px"
               disabled={layout.lockMode==='cell'||layout.lockMode==='aspect'}
               onChange={v=>{solve({canvasH:v});const[rw,rh]=toSimpleRatio(solved.canvasW,v);setRatioW(rw);setRatioH(rh);}}/>
-            {layout.lockMode==='cell'&&(
-              <p className="text-[10px] text-white/25 pt-0.5">Canvas คำนวณจาก Cell × Cols + Gap</p>
+            {layout.lockMode==='cell' && (
+              <p className="text-[10px] text-white/25 pt-0.5">Canvas คำนวณจาก Cell × Grid — สลับเป็น Lock Canvas เพื่อแก้โดยตรง</p>
+            )}
+            {layout.lockMode==='aspect' && (
+              <p className="text-[10px] text-white/25 pt-0.5">Height คำนวณจาก Aspect Ratio ของ cell</p>
             )}
           </div>
-        ) : (
-          <div className="space-y-2">
-            {/* Preset chips */}
-            <div className="flex flex-wrap gap-1">
-              {ASPECT_PRESETS.map(p=>{
-                const active=ratioW===p.w&&ratioH===p.h;
-                return (
-                  <button key={p.label}
-                    onClick={()=>{setRatioW(p.w);setRatioH(p.h);applyRatio(p.w,p.h,solved.canvasW);}}
-                    className={`text-[10px] px-2 py-0.5 rounded-full border transition-all ${
-                      active?'bg-indigo-600 border-indigo-500 text-white':'border-white/10 text-white/45 hover:border-white/25 hover:text-white/70'
-                    }`}
-                  >{p.label}</button>
-                );
-              })}
-            </div>
-
-            {/* Custom W:H */}
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-white/45 w-8">W:H</span>
-              <input type="number" min={1} max={999} value={ratioW}
-                onChange={e=>{const v=Math.max(1,parseInt(e.target.value)||1);setRatioW(v);applyRatio(v,ratioH,solved.canvasW);}}
-                className="w-14 bg-[#1a1c26] border border-white/10 rounded-md px-2 py-0.5 text-xs text-center text-white outline-none focus:border-indigo-500/80"
-              />
-              <span className="text-white/30 text-sm font-light">:</span>
-              <input type="number" min={1} max={999} value={ratioH}
-                onChange={e=>{const v=Math.max(1,parseInt(e.target.value)||1);setRatioH(v);applyRatio(ratioW,v,solved.canvasW);}}
-                className="w-14 bg-[#1a1c26] border border-white/10 rounded-md px-2 py-0.5 text-xs text-center text-white outline-none focus:border-indigo-500/80"
-              />
-            </div>
-
-            {/* Width input + computed height */}
-            <div className="space-y-0.5">
-              <Row label="Width" value={solved.canvasW} min={100} max={20000} unit="px"
-                disabled={layout.lockMode==='cell'}
-                onChange={v=>applyRatio(ratioW,ratioH,v)}/>
-              <div className="flex items-center justify-between h-7">
-                <span className="text-xs text-white/25">Height</span>
-                <span className="text-xs font-mono text-white/30">{solved.canvasH} px</span>
-              </div>
-            </div>
-          </div>
         )}
+
+        {/* ── ratio mode ── */}
+        {canvasSizeMode==='ratio' && (() => {
+          const canvasLocked = layout.lockMode==='cell';
+          const heightAuto   = layout.lockMode==='cell'||layout.lockMode==='aspect';
+
+          const applyPreset=(rw:number,rh:number)=>{
+            setRatioW(rw); setRatioH(rh);
+            if(layout.lockMode==='aspect'){
+              solve({cellAspect: rw/rh});
+            } else if(!canvasLocked){
+              applyRatio(rw,rh,solved.canvasW);
+            }
+          };
+
+          return (
+            <div className="space-y-2">
+              {/* Preset chips */}
+              <div className="flex flex-wrap gap-1">
+                {ASPECT_PRESETS.map(p=>{
+                  const curRatio = solved.canvasW / solved.canvasH;
+                  const presetRatio = p.w / p.h;
+                  const active = Math.abs(curRatio - presetRatio) < 0.01;
+                  return (
+                    <button key={p.label}
+                      onClick={()=>applyPreset(p.w,p.h)}
+                      disabled={canvasLocked}
+                      className={`text-[10px] px-2 py-0.5 rounded-full border transition-all ${
+                        canvasLocked?'border-white/5 text-white/20 cursor-not-allowed':
+                        active?'bg-indigo-600 border-indigo-500 text-white':
+                        'border-white/10 text-white/45 hover:border-white/25 hover:text-white/70'
+                      }`}
+                    >{p.label}</button>
+                  );
+                })}
+              </div>
+
+              {/* Custom W:H inputs */}
+              <div className="flex items-center gap-2">
+                <span className={`text-xs w-8 ${canvasLocked?'text-white/20':'text-white/45'}`}>W:H</span>
+                <input type="number" min={1} max={999} value={ratioW} disabled={canvasLocked}
+                  onChange={e=>{const v=Math.max(1,parseInt(e.target.value)||1);setRatioW(v);applyPreset(v,ratioH);}}
+                  className={`w-14 border rounded-md px-2 py-0.5 text-xs text-center text-white outline-none transition-colors ${
+                    canvasLocked?'bg-white/[0.03] border-white/5 text-white/20 cursor-not-allowed':
+                    'bg-[#1a1c26] border-white/10 focus:border-indigo-500/80'
+                  }`}
+                />
+                <span className="text-white/30 text-sm font-light">:</span>
+                <input type="number" min={1} max={999} value={ratioH} disabled={canvasLocked}
+                  onChange={e=>{const v=Math.max(1,parseInt(e.target.value)||1);setRatioH(v);applyPreset(ratioW,v);}}
+                  className={`w-14 border rounded-md px-2 py-0.5 text-xs text-center text-white outline-none transition-colors ${
+                    canvasLocked?'bg-white/[0.03] border-white/5 text-white/20 cursor-not-allowed':
+                    'bg-[#1a1c26] border-white/10 focus:border-indigo-500/80'
+                  }`}
+                />
+              </div>
+
+              {/* Width + computed Height display */}
+              <div className="space-y-0.5">
+                <Row label="Width" value={solved.canvasW} min={100} max={20000} unit="px"
+                  disabled={canvasLocked}
+                  onChange={v=>{if(layout.lockMode==='aspect'){solve({canvasW:v});}else{applyRatio(ratioW,ratioH,v);}}}/>
+                <div className="flex items-center justify-between h-7">
+                  <span className={`text-xs ${heightAuto?'text-white/25':'text-white/55'}`}>Height</span>
+                  <div className="flex items-center gap-1">
+                    <span className="text-[9px] text-white/20 italic">auto</span>
+                    <span className="text-xs font-mono text-white/35">{solved.canvasH}</span>
+                    <span className="text-[10px] text-white/20">px</span>
+                  </div>
+                </div>
+              </div>
+
+              {canvasLocked && (
+                <p className="text-[10px] text-amber-400/60 pt-0.5">สลับเป็น Lock Canvas เพื่อใช้ ratio</p>
+              )}
+            </div>
+          );
+        })()}
       </div>
 
       <Divider/>

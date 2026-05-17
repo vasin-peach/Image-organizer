@@ -3,9 +3,11 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useMemo,
   useRef,
   useState,
 } from 'react';
+
 import {
   DndContext,
   closestCenter,
@@ -130,30 +132,46 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
   const [activeDragId, setActiveDragId] = useState<string | null>(null);
   const [switchedToManual, setSwitchedToManual] = useState(false);
 
-  const ordered = includedImages(images, orderedIds);
-  const sorted = sortImages(ordered, sort);
-  const layoutResult = computeLayout(sorted, layout);
+  const sorted = useMemo(
+    () => sortImages(includedImages(images, orderedIds), sort),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [images, orderedIds, sort.mode, sort.reversed, sort.seed]
+  );
+  const layoutResult = useMemo(
+    () => computeLayout(sorted, layout),
+    [sorted, layout]
+  );
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } })
   );
 
   // ─── Render canvas ────────────────────────────────────────────────────────
-  const renderFrame = useCallback(async () => {
+  // Keep a stable ref to the latest render arguments so the export function
+  // always has current data without needing to change its own deps.
+  const renderArgsRef = useRef({ sorted, layoutResult, style, layout });
+  renderArgsRef.current = { sorted, layoutResult, style, layout };
+
+  // Re-render whenever any relevant data changes, with cancellation to avoid
+  // a slow frame overwriting a newer one.
+  useEffect(() => {
+    let cancelled = false;
     const canvas = canvasRef.current;
     if (!canvas) return;
-    await Promise.all(sorted.map(loadImage));
-    const elMap = new Map<string, HTMLImageElement>();
-    sorted.forEach((img) => {
-      const el = imageCache.get(img.id);
-      if (el) elMap.set(img.id, el);
-    });
-    await renderToCanvas(canvas, elMap, {
-      layout: layoutResult, images: sorted, style, layoutCfg: layout, scale: 1,
-    });
+
+    (async () => {
+      const { sorted: s, layoutResult: lr, style: st, layout: l } = renderArgsRef.current;
+      await Promise.all(s.map(loadImage));
+      if (cancelled) return;
+      const elMap = new Map<string, HTMLImageElement>();
+      s.forEach((img) => { const el = imageCache.get(img.id); if (el) elMap.set(img.id, el); });
+      if (cancelled) return;
+      await renderToCanvas(canvas, elMap, { layout: lr, images: s, style: st, layoutCfg: l, scale: 1 });
+    })();
+
+    return () => { cancelled = true; };
   }, [sorted, layoutResult, style, layout]);
 
-  useEffect(() => { renderFrame(); }, [renderFrame]);
 
   // Auto-fit
   useEffect(() => {
@@ -225,14 +243,12 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
   const triggerExport = useCallback(async () => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    await Promise.all(sorted.map(loadImage));
+    const { sorted: s, layoutResult: lr, layout: l, style: st } = renderArgsRef.current;
+    await Promise.all(s.map(loadImage));
     const elMap = new Map<string, HTMLImageElement>();
-    sorted.forEach((img) => {
-      const el = imageCache.get(img.id);
-      if (el) elMap.set(img.id, el);
-    });
-    await exportImage(canvas, elMap, sorted, layoutResult, layout, style, exportCfg);
-  }, [sorted, layoutResult, layout, style, exportCfg]);
+    s.forEach((img) => { const el = imageCache.get(img.id); if (el) elMap.set(img.id, el); });
+    await exportImage(canvas, elMap, s, lr, l, st, exportCfg);
+  }, [exportCfg]);
 
   useImperativeHandle(ref, () => ({ triggerExport }));
 
