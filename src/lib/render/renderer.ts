@@ -108,6 +108,11 @@ export async function renderToCanvas(
   ctx.fillStyle = style.bgColor;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, 0, canvas.width, canvas.height);
+  ctx.clip();
+
   for (const cell of layout.cells) {
     const img = opts.images.find((i) => i.id === cell.imageId);
     if (!img) continue;
@@ -137,6 +142,8 @@ export async function renderToCanvas(
       ctx.stroke();
     }
   }
+
+  ctx.restore();
 }
 
 export async function exportImage(

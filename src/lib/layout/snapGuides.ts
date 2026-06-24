@@ -16,9 +16,14 @@ export function collectSnapTargets(
   canvasH: number,
   outerPad: number,
   axis: SnapAxis,
-  excludeNear?: number
+  excludeNear?: number | number[]
 ): number[] {
   const targets = new Set<number>();
+  const excludes = excludeNear === undefined
+    ? []
+    : Array.isArray(excludeNear)
+      ? excludeNear
+      : [excludeNear];
 
   if (axis === 'x') {
     targets.add(outerPad);
@@ -36,9 +41,9 @@ export function collectSnapTargets(
     }
   }
 
-  if (excludeNear !== undefined) {
+  for (const exclude of excludes) {
     for (const t of [...targets]) {
-      if (Math.abs(t - excludeNear) < 0.5) {
+      if (Math.abs(t - exclude) < 0.5) {
         targets.delete(t);
       }
     }
@@ -77,17 +82,19 @@ export function applyEdgeSnap(
   canvasW: number,
   canvasH: number,
   outerPad: number,
-  zoom: number
+  zoom: number,
+  excludeEdges?: number[]
 ): { deltaPx: number; guide: SnapGuide | null } {
   const threshold = SNAP_THRESHOLD_PX / zoom;
   const proposedEdge = currentEdge + rawDeltaPx;
+  const excludes = excludeEdges ?? [currentEdge];
   const targets = collectSnapTargets(
     cells,
     canvasW,
     canvasH,
     outerPad,
     axis,
-    currentEdge
+    excludes
   );
   const snap = snapToNearest(proposedEdge, targets, threshold, axis);
 

@@ -475,32 +475,32 @@ export default function LayoutControls() {
         </div>
       </div>
 
-      {(layout.mode === 'grid-uniform' || layout.mode === 'mosaic') && (
-        <>
-          <Divider/>
-          <div>
-            <SectionLabel>Cell Weights</SectionLabel>
-            <button
-              type="button"
-              onClick={() => {
-                if (layout.mode === 'grid-uniform') {
-                  resetCellAdjust(solved.rows, solved.cols);
-                } else {
-                  resetMosaicAdjust(solved.cols);
-                }
-              }}
-              className="w-full text-xs py-1.5 rounded border border-white/10 text-white/50 hover:text-white hover:border-white/30 transition-colors"
-            >
-              Reset cell sizes
-            </button>
-            <p className="text-[10px] text-white/25 mt-1.5">
-              {layout.mode === 'mosaic'
-                ? 'ลากขอบขวา = ปรับความกว้างคอลัมน์ · ลากขอบล่าง = ปรับความสูงภาพ'
-                : 'ลากขอบช่องบน preview เพื่อปรับความกว้าง/สูงต่อช่อง'}
-            </p>
-          </div>
-        </>
-      )}
+      <>
+        <Divider/>
+        <div>
+          <SectionLabel>Cell Weights</SectionLabel>
+          <button
+            type="button"
+            onClick={() => {
+              if (layout.mode === 'mosaic') {
+                resetMosaicAdjust(solved.cols);
+              } else {
+                resetCellAdjust(solved.rows, solved.cols);
+              }
+            }}
+            className="w-full text-xs py-1.5 rounded border border-white/10 text-white/50 hover:text-white hover:border-white/30 transition-colors"
+          >
+            Reset cell sizes
+          </button>
+          <p className="text-[10px] text-white/25 mt-1.5">
+            {layout.mode === 'mosaic'
+              ? 'ลากขอบขวา = ปรับความกว้างคอลัมน์ · ลากขอบล่าง = ปรับความสูงภาพ'
+              : layout.mode === 'grid-aspect'
+              ? 'ลากขอบช่องบน preview เพื่อปรับความกว้าง/สูงต่อแถว (สัดส่วนภาพยังคงอยู่)'
+              : 'ลากขอบช่องบน preview เพื่อปรับความกว้าง/สูงต่อช่อง'}
+          </p>
+        </div>
+      </>
 
       {/* ── Summary ───────────────────────────────────────── */}
       <div className="flex items-center justify-between text-[10px] text-white/25 bg-white/[0.03] rounded-lg px-3 py-2">

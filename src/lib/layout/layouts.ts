@@ -85,38 +85,70 @@ export function layoutGridAspect(
     });
   }
 
-  const rowCount = Math.ceil(images.length / cols);
-  const totalH = outerPad + rowCount * (cellH + gap) + outerPad;
-  return { cells, totalW: cfg.canvasW, totalH };
+  return { cells, totalW: cfg.canvasW, totalH: cfg.canvasH };
 }
 
-/** Fit mosaic cells to cfg canvas when lockMode is canvas; otherwise use natural bounds. */
-function finalizeMosaicFrame(cells: CellRect[], cfg: LayoutConfig): LayoutResult {
-  const naturalW = cells.length
-    ? Math.max(...cells.map((c) => c.x + c.w)) + cfg.outerPad
-    : cfg.canvasW;
-  const naturalH = cells.length
-    ? Math.max(...cells.map((c) => c.y + c.h)) + cfg.outerPad
-    : cfg.canvasH;
+/** Grid Aspect with per-row height weights and per-row column width weights (× aspect). */
+export function layoutGridAspectAdjustable(
+  images: ImageEntry[],
+  cfg: LayoutConfig,
+  cellAdjust: CellAdjust
+): LayoutResult {
+  const { cols, gap, outerPad, canvasW, canvasH } = cfg;
+  const rows = Math.ceil(images.length / cols);
+  const adjust =
+    cellAdjust.rows === rows && cellAdjust.cols === cols
+      ? cellAdjust
+      : createUniformCellAdjust(rows, cols);
 
-  if (cfg.lockMode !== 'canvas' || cells.length === 0) {
-    return { cells, totalW: naturalW, totalH: naturalH };
+  const rowWeightSum = adjust.rowWeights.reduce((s, w) => s + w, 0) || rows;
+  const availH = canvasH - 2 * outerPad - (rows + 1) * gap;
+  const cells: CellRect[] = [];
+  let y = outerPad + gap;
+
+  for (let row = 0; row < rows; row++) {
+    const rowStart = row * cols;
+    const cellsInRow = Math.min(cols, images.length - rowStart);
+    const rowH = (adjust.rowWeights[row] / rowWeightSum) * availH;
+    const weights = adjust.colWeights[row].slice(0, cellsInRow);
+    const availW = canvasW - 2 * outerPad - (cellsInRow + 1) * gap;
+    const rowImages = images.slice(rowStart, rowStart + cellsInRow);
+
+    const totalWeightedAspect = rowImages.reduce((s, img, colIdx) => {
+      const aspect = img.width > 0 ? img.width / img.height : 1;
+      return s + aspect * weights[colIdx];
+    }, 0);
+
+    let x = outerPad + gap;
+    for (let col = 0; col < cellsInRow; col++) {
+      const img = rowImages[col];
+      const aspect = img.width > 0 ? img.width / img.height : 1;
+      const w =
+        totalWeightedAspect > 0
+          ? Math.floor((aspect * weights[col] / totalWeightedAspect) * availW)
+          : Math.floor(availW / cellsInRow);
+      cells.push({
+        x,
+        y,
+        w,
+        h: rowH,
+        imageId: img.id,
+        imageIndex: rowStart + col,
+        rowIndex: row,
+        colIndex: col,
+      });
+      x += w + gap;
+    }
+
+    y += rowH + gap;
   }
 
-  const targetW = cfg.canvasW;
-  const targetH = cfg.canvasH;
-  const scaleX = naturalW > 0 ? targetW / naturalW : 1;
-  const scaleY = naturalH > 0 ? targetH / naturalH : 1;
+  return { cells, totalW: cfg.canvasW, totalH: cfg.canvasH };
+}
 
-  const scaled = cells.map((c) => ({
-    ...c,
-    x: cfg.outerPad + (c.x - cfg.outerPad) * scaleX,
-    y: cfg.outerPad + (c.y - cfg.outerPad) * scaleY,
-    w: c.w * scaleX,
-    h: c.h * scaleY,
-  }));
-
-  return { cells: scaled, totalW: targetW, totalH: targetH };
+/** Pin mosaic layout to the configured canvas frame (never expand or scale-to-fit). */
+function finalizeMosaicFrame(cells: CellRect[], cfg: LayoutConfig): LayoutResult {
+  return { cells, totalW: cfg.canvasW, totalH: cfg.canvasH };
 }
 
 /** Mosaic / Masonry: shortest-column-first packing */
@@ -260,6 +292,9 @@ export function computeLayout(
       }
       return layoutGridUniform(images, cfg);
     case 'grid-aspect':
+      if (cellAdjust) {
+        return layoutGridAspectAdjustable(images, cfg, cellAdjust);
+      }
       return layoutGridAspect(images, cfg);
     case 'mosaic':
       if (mosaicAdjust) {

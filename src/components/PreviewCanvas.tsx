@@ -173,6 +173,28 @@ function getDraggedCellEdge(
   return cell ? { edge: cell.y + cell.h, axis: 'y' } : null;
 }
 
+function getSnapExcludeEdges(
+  cellResize: CellResizeDrag,
+  cells: CellRect[]
+): number[] {
+  if (cellResize.layout === 'grid') {
+    if (cellResize.kind === 'col') {
+      const cell = cells.find(
+        (c) => c.rowIndex === cellResize.rowIndex && c.colIndex === cellResize.colIndex
+      );
+      return cell ? [cell.x + cell.w] : [];
+    }
+    const cell = cells.find((c) => c.rowIndex === cellResize.rowIndex);
+    return cell ? [cell.y + cell.h] : [];
+  }
+  if (cellResize.kind === 'col') {
+    const cell = cells.find((c) => c.colIndex === cellResize.colIndex);
+    return cell ? [cell.x + cell.w] : [];
+  }
+  const cell = cells.find((c) => c.imageId === cellResize.imageId);
+  return cell ? [cell.y + cell.h] : [];
+}
+
 // ─── Single sortable cell overlay ─────────────────────────────────────────────
 function SortableCell({
   cell,
@@ -544,8 +566,7 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
     [sorted, solvedLayout, effectiveCellAdjust, effectiveMosaicAdjust, mosaicImageSizeKey]
   );
 
-  const showCellResizeHandles =
-    solvedLayout.mode === 'grid-uniform' || solvedLayout.mode === 'mosaic';
+  const showCellResizeHandles = true;
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: DRAG_THRESHOLD } })
@@ -751,7 +772,7 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
   const handleColResizeStart = useCallback(
     (e: React.PointerEvent, cell: CellRect) => {
       if (e.button !== 0) return;
-      if (solvedLayout.mode === 'grid-uniform') {
+      if (solvedLayout.mode === 'grid-uniform' || solvedLayout.mode === 'grid-aspect') {
         e.stopPropagation();
         e.preventDefault();
 
@@ -810,7 +831,7 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
   const handleRowResizeStart = useCallback(
     (e: React.PointerEvent, cell: CellRect, img: ImageEntry) => {
       if (e.button !== 0) return;
-      if (solvedLayout.mode === 'grid-uniform') {
+      if (solvedLayout.mode === 'grid-uniform' || solvedLayout.mode === 'grid-aspect') {
         e.stopPropagation();
         e.preventDefault();
 
@@ -955,7 +976,28 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
             canvasH,
             'y'
           );
-          const desiredScale = cellResize.startScale + canvasDeltaY / cellResize.baseHeight;
+          const desiredEdge = cellResize.startEdge + canvasDeltaY;
+          const edgeInfo = getDraggedCellEdge(cellResize, liveCells);
+          const currentEdge = edgeInfo?.edge ?? desiredEdge;
+          let deltaPx = desiredEdge - currentEdge;
+
+          const canvasZoomY = frameRect.height / canvasH;
+          const snapZoom = canvasZoomY > 0 ? 1 / canvasZoomY : zoom;
+          const snapped = applyEdgeSnap(
+            deltaPx,
+            currentEdge,
+            'y',
+            liveCells,
+            canvasW,
+            canvasH,
+            solvedLayout.outerPad,
+            snapZoom,
+            getSnapExcludeEdges(cellResize, liveCells)
+          );
+          deltaPx = snapped.deltaPx;
+          setSnapGuides(snapped.guide ? [snapped.guide] : []);
+
+          const desiredScale = cellResize.startScale + deltaPx / cellResize.baseHeight;
           setMosaicAdjust(
             setMosaicHeightScale(liveMosaicAdjust, cellResize.imageId, desiredScale),
             { skipHistory: true }
@@ -987,7 +1029,8 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
             canvasW,
             canvasH,
             solvedLayout.outerPad,
-            snapZoom
+            snapZoom,
+            getSnapExcludeEdges(cellResize, liveCells)
           );
           deltaPx = snapped.deltaPx;
           setSnapGuides(snapped.guide ? [snapped.guide] : []);
@@ -1137,6 +1180,7 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
     marginTop: -(layoutResult.totalH / 2),
     transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
     transformOrigin: 'center center',
+    overflow: 'hidden',
   };
 
   return (
