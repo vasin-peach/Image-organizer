@@ -39,8 +39,8 @@ import {
 } from '../lib/layout/cellAdjust';
 import {
   adjustMosaicColWeight,
-  adjustMosaicHeightScale,
   normalizeMosaicAdjust,
+  setMosaicHeightScale,
 } from '../lib/layout/mosaicAdjust';
 import { applyEdgeSnap, type SnapGuide } from '../lib/layout/snapGuides';
 import type { ImageEntry } from '../types';
@@ -82,6 +82,17 @@ function coverExcess(cellW: number, cellH: number, imgW: number, imgH: number, z
   return { excessX: coverW - cellW, excessY: coverH - cellH };
 }
 
+function clientAxisToCanvasDelta(
+  deltaClient: number,
+  frameRect: DOMRect,
+  canvasSize: number,
+  axis: 'x' | 'y'
+): number {
+  const rendered = axis === 'x' ? frameRect.width : frameRect.height;
+  if (rendered <= 0) return deltaClient;
+  return deltaClient * (canvasSize / rendered);
+}
+
 type RepositionDrag = {
   imageId: string;
   pointerId: number;
@@ -106,6 +117,7 @@ type CellResizeDrag =
       cellCountInRow: number;
       pointerId: number;
       startClient: number;
+      startEdge: number;
       availPx: number;
       totalWeight: number;
     }
@@ -115,6 +127,7 @@ type CellResizeDrag =
       colIndex: number;
       pointerId: number;
       startClient: number;
+      startEdge: number;
       availPx: number;
       totalWeight: number;
     }
@@ -124,6 +137,8 @@ type CellResizeDrag =
       imageId: string;
       pointerId: number;
       startClient: number;
+      startEdge: number;
+      startScale: number;
       baseHeight: number;
     };
 
@@ -380,6 +395,7 @@ function CanvasResizeHandles({
 const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function PreviewCanvas(_, ref) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const canvasFrameRef = useRef<HTMLDivElement>(null);
   const {
     images,
     orderedIds,
@@ -756,6 +772,7 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
           cellCountInRow: cellsInRow,
           pointerId: e.pointerId,
           startClient: e.clientX,
+          startEdge: cell.x + cell.w,
           availPx: availW,
           totalWeight,
         };
@@ -779,6 +796,7 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
           colIndex: cell.colIndex,
           pointerId: e.pointerId,
           startClient: e.clientX,
+          startEdge: cell.x + cell.w,
           availPx: availW,
           totalWeight,
         };
@@ -809,6 +827,7 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
           cellCountInRow: 0,
           pointerId: e.pointerId,
           startClient: e.clientY,
+          startEdge: cell.y + cell.h,
           availPx: availH,
           totalWeight,
         };
@@ -839,6 +858,8 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
           imageId: img.id,
           pointerId: e.pointerId,
           startClient: e.clientY,
+          startEdge: cell.y + cell.h,
+          startScale: effectiveMosaicAdjust.heightScales[img.id] ?? 1,
           baseHeight,
         };
         beginHistoryGesture();
@@ -902,10 +923,13 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
 
       const cellResize = cellResizeRef.current;
       if (cellResize && e.pointerId === cellResize.pointerId) {
-        const rawDeltaPx =
-          cellResize.kind === 'col'
-            ? (e.clientX - cellResize.startClient) / zoom
-            : (e.clientY - cellResize.startClient) / zoom;
+        const frameEl = canvasFrameRef.current;
+        if (!frameEl) return;
+        const frameRect = frameEl.getBoundingClientRect();
+        const canvasW = solvedLayout.canvasW;
+        const canvasH = solvedLayout.canvasH;
+        const canvasZoomX = frameRect.width / canvasW;
+        const canvasZoomY = frameRect.height / canvasH;
 
         const cfgState = useConfigStore.getState();
         const liveCellAdjust = normalizeCellAdjust(
@@ -924,21 +948,52 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
           solvedLayout.mode === 'mosaic' ? liveMosaicAdjust : null
         ).cells;
 
-        const edgeInfo = getDraggedCellEdge(cellResize, liveCells);
-        const { deltaPx, guide } = edgeInfo
-          ? applyEdgeSnap(
-              rawDeltaPx,
-              edgeInfo.edge,
-              edgeInfo.axis,
-              liveCells,
-              solvedLayout.canvasW,
-              solvedLayout.canvasH,
-              solvedLayout.outerPad,
-              zoom
-            )
-          : { deltaPx: rawDeltaPx, guide: null };
+        if (cellResize.kind === 'height') {
+          const canvasDeltaY = clientAxisToCanvasDelta(
+            e.clientY - cellResize.startClient,
+            frameRect,
+            canvasH,
+            'y'
+          );
+          const desiredScale = cellResize.startScale + canvasDeltaY / cellResize.baseHeight;
+          setMosaicAdjust(
+            setMosaicHeightScale(liveMosaicAdjust, cellResize.imageId, desiredScale),
+            { skipHistory: true }
+          );
+          return;
+        }
 
-        setSnapGuides(guide ? [guide] : []);
+        const isCol = cellResize.kind === 'col';
+        const axis = isCol ? ('x' as const) : ('y' as const);
+        const canvasDelta = clientAxisToCanvasDelta(
+          (isCol ? e.clientX : e.clientY) - cellResize.startClient,
+          frameRect,
+          isCol ? canvasW : canvasH,
+          axis
+        );
+        const desiredEdge = cellResize.startEdge + canvasDelta;
+        const edgeInfo = getDraggedCellEdge(cellResize, liveCells);
+        const currentEdge = edgeInfo?.edge ?? desiredEdge;
+        let deltaPx = desiredEdge - currentEdge;
+
+        if (edgeInfo) {
+          const canvasZoom = isCol ? canvasZoomX : canvasZoomY;
+          const snapZoom = canvasZoom > 0 ? 1 / canvasZoom : zoom;
+          const snapped = applyEdgeSnap(
+            deltaPx,
+            currentEdge,
+            edgeInfo.axis,
+            liveCells,
+            canvasW,
+            canvasH,
+            solvedLayout.outerPad,
+            snapZoom
+          );
+          deltaPx = snapped.deltaPx;
+          setSnapGuides(snapped.guide ? [snapped.guide] : []);
+        } else {
+          setSnapGuides([]);
+        }
 
         if (cellResize.layout === 'grid') {
           const deltaWeight = (deltaPx / cellResize.availPx) * cellResize.totalWeight;
@@ -954,13 +1009,11 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
               ),
               { skipHistory: true }
             );
-            cellResize.startClient = e.clientX;
           } else {
             setCellAdjust(
               adjustRowWeight(liveCellAdjust, cellResize.rowIndex, deltaWeight),
               { skipHistory: true }
             );
-            cellResize.startClient = e.clientY;
           }
         } else if (cellResize.kind === 'col') {
           const deltaWeight = (deltaPx / cellResize.availPx) * cellResize.totalWeight;
@@ -968,26 +1021,29 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
             adjustMosaicColWeight(liveMosaicAdjust, cellResize.colIndex, deltaWeight),
             { skipHistory: true }
           );
-          cellResize.startClient = e.clientX;
-        } else {
-          const deltaScale = deltaPx / cellResize.baseHeight;
-          setMosaicAdjust(
-            adjustMosaicHeightScale(
-              liveMosaicAdjust,
-              cellResize.imageId,
-              deltaScale
-            ),
-            { skipHistory: true }
-          );
-          cellResize.startClient = e.clientY;
         }
         return;
       }
 
       const canvasResize = canvasResizeRef.current;
       if (canvasResize && e.pointerId === canvasResize.pointerId) {
-        const dx = (e.clientX - canvasResize.startClientX) / zoom;
-        const dy = (e.clientY - canvasResize.startClientY) / zoom;
+        const frameEl = canvasFrameRef.current;
+        if (!frameEl) return;
+        const frameRect = frameEl.getBoundingClientRect();
+        const canvasW = solvedLayout.canvasW;
+        const canvasH = solvedLayout.canvasH;
+        const dx = clientAxisToCanvasDelta(
+          e.clientX - canvasResize.startClientX,
+          frameRect,
+          canvasW,
+          'x'
+        );
+        const dy = clientAxisToCanvasDelta(
+          e.clientY - canvasResize.startClientY,
+          frameRect,
+          canvasH,
+          'y'
+        );
         let nextW = canvasResize.startCanvasW;
         let nextH = canvasResize.startCanvasH;
         if (canvasResize.edge === 'right' || canvasResize.edge === 'corner') {
@@ -1110,7 +1166,7 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
           onDragEnd={handleDragEnd}
         >
           <SortableContext items={sorted.map((i) => i.id)} strategy={rectSortingStrategy}>
-            <div style={canvasContainerStyle} data-canvas-frame>
+            <div ref={canvasFrameRef} style={canvasContainerStyle} data-canvas-frame>
               <canvas ref={canvasRef} className="block absolute inset-0" />
               {layoutResult.cells.map((cell) => {
                 const img = sorted.find((i) => i.id === cell.imageId);

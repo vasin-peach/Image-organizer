@@ -80,6 +80,19 @@ export function adjustMosaicHeightScale(
   };
 }
 
+/** Set absolute per-image height scale in mosaic layout. */
+export function setMosaicHeightScale(
+  adjust: MosaicAdjust,
+  imageId: string,
+  scale: number
+): MosaicAdjust {
+  const next = Math.max(MIN_HEIGHT_SCALE, Math.min(MAX_HEIGHT_SCALE, scale));
+  return {
+    ...adjust,
+    heightScales: { ...adjust.heightScales, [imageId]: next },
+  };
+}
+
 export function mosaicColX(
   col: number,
   colWidths: number[],
