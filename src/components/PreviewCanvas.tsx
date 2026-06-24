@@ -42,6 +42,7 @@ import {
   adjustMosaicHeightScale,
   normalizeMosaicAdjust,
 } from '../lib/layout/mosaicAdjust';
+import { applyEdgeSnap, type SnapGuide } from '../lib/layout/snapGuides';
 import type { ImageEntry } from '../types';
 import type { CellRect } from '../lib/layout/layouts';
 import CropOverlayModal from './CropOverlayModal';
@@ -127,6 +128,28 @@ type CanvasResizeDrag = {
   startCanvasW: number;
   startCanvasH: number;
 };
+
+function getDraggedCellEdge(
+  cellResize: CellResizeDrag,
+  cells: CellRect[]
+): { edge: number; axis: 'x' | 'y' } | null {
+  if (cellResize.layout === 'grid') {
+    if (cellResize.kind === 'col') {
+      const cell = cells.find(
+        (c) => c.rowIndex === cellResize.rowIndex && c.colIndex === cellResize.colIndex
+      );
+      return cell ? { edge: cell.x + cell.w, axis: 'x' } : null;
+    }
+    const cell = cells.find((c) => c.rowIndex === cellResize.rowIndex);
+    return cell ? { edge: cell.y + cell.h, axis: 'y' } : null;
+  }
+  if (cellResize.kind === 'col') {
+    const cell = cells.find((c) => c.colIndex === cellResize.colIndex);
+    return cell ? { edge: cell.x + cell.w, axis: 'x' } : null;
+  }
+  const cell = cells.find((c) => c.imageId === cellResize.imageId);
+  return cell ? { edge: cell.y + cell.h, axis: 'y' } : null;
+}
 
 // ─── Single sortable cell overlay ─────────────────────────────────────────────
 function SortableCell({
@@ -243,6 +266,53 @@ function SortableCell({
   );
 }
 
+// ─── Snap guide lines during cell resize ──────────────────────────────────────
+function SnapGuideLines({
+  guides,
+  totalW,
+  totalH,
+}: {
+  guides: SnapGuide[];
+  totalW: number;
+  totalH: number;
+}) {
+  if (guides.length === 0) return null;
+
+  return (
+    <>
+      {guides.map((guide, i) =>
+        guide.axis === 'x' ? (
+          <div
+            key={`snap-v-${i}`}
+            className="absolute pointer-events-none z-40"
+            style={{
+              left: guide.position,
+              top: 0,
+              width: 1,
+              height: totalH,
+              background: 'rgba(129, 140, 248, 0.95)',
+              boxShadow: '0 0 6px rgba(99, 102, 241, 0.9)',
+            }}
+          />
+        ) : (
+          <div
+            key={`snap-h-${i}`}
+            className="absolute pointer-events-none z-40"
+            style={{
+              left: 0,
+              top: guide.position,
+              width: totalW,
+              height: 1,
+              background: 'rgba(129, 140, 248, 0.95)',
+              boxShadow: '0 0 6px rgba(99, 102, 241, 0.9)',
+            }}
+          />
+        )
+      )}
+    </>
+  );
+}
+
 // ─── Canvas frame resize handles ──────────────────────────────────────────────
 function CanvasResizeHandles({
   zoom,
@@ -321,6 +391,7 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
   const [reorderArmedId, setReorderArmedId] = useState<string | null>(null);
   const [cropZoomTargetId, setCropZoomTargetId] = useState<string | null>(null);
   const [switchedToManual, setSwitchedToManual] = useState(false);
+  const [snapGuides, setSnapGuides] = useState<SnapGuide[]>([]);
   const lastClickRef = useRef<{ id: string; time: number } | null>(null);
   const repositionDragRef = useRef<RepositionDrag | null>(null);
   const cellResizeRef = useRef<CellResizeDrag | null>(null);
@@ -724,12 +795,28 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
 
       const cellResize = cellResizeRef.current;
       if (cellResize && e.pointerId === cellResize.pointerId) {
+        const rawDeltaPx =
+          cellResize.kind === 'col'
+            ? (e.clientX - cellResize.startClient) / zoom
+            : (e.clientY - cellResize.startClient) / zoom;
+
+        const edgeInfo = getDraggedCellEdge(cellResize, layoutResult.cells);
+        const { deltaPx, guide } = edgeInfo
+          ? applyEdgeSnap(
+              rawDeltaPx,
+              edgeInfo.edge,
+              edgeInfo.axis,
+              layoutResult.cells,
+              solvedLayout.canvasW,
+              solvedLayout.canvasH,
+              solvedLayout.outerPad,
+              zoom
+            )
+          : { deltaPx: rawDeltaPx, guide: null };
+
+        setSnapGuides(guide ? [guide] : []);
+
         if (cellResize.layout === 'grid') {
-          const deltaClient =
-            cellResize.kind === 'col'
-              ? e.clientX - cellResize.startClient
-              : e.clientY - cellResize.startClient;
-          const deltaPx = deltaClient / zoom;
           const deltaWeight = (deltaPx / cellResize.availPx) * cellResize.totalWeight;
 
           if (cellResize.kind === 'col') {
@@ -750,14 +837,12 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
             cellResize.startClient = e.clientY;
           }
         } else if (cellResize.kind === 'col') {
-          const deltaPx = (e.clientX - cellResize.startClient) / zoom;
           const deltaWeight = (deltaPx / cellResize.availPx) * cellResize.totalWeight;
           setMosaicAdjust(
             adjustMosaicColWeight(effectiveMosaicAdjust, cellResize.colIndex, deltaWeight)
           );
           cellResize.startClient = e.clientX;
         } else {
-          const deltaPx = (e.clientY - cellResize.startClient) / zoom;
           const deltaScale = deltaPx / cellResize.baseHeight;
           setMosaicAdjust(
             adjustMosaicHeightScale(
@@ -786,7 +871,19 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
         applyCanvasSize(Math.round(nextW), Math.round(nextH));
       }
     },
-    [zoom, setCropOverride, effectiveCellAdjust, effectiveMosaicAdjust, setCellAdjust, setMosaicAdjust, applyCanvasSize]
+    [
+      zoom,
+      setCropOverride,
+      effectiveCellAdjust,
+      effectiveMosaicAdjust,
+      setCellAdjust,
+      setMosaicAdjust,
+      applyCanvasSize,
+      layoutResult.cells,
+      solvedLayout.canvasW,
+      solvedLayout.canvasH,
+      solvedLayout.outerPad,
+    ]
   );
 
   const onContainerPointerUp = useCallback((e: React.PointerEvent) => {
@@ -798,6 +895,7 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
     }
     if (cellResizeRef.current?.pointerId === e.pointerId) {
       cellResizeRef.current = null;
+      setSnapGuides([]);
       endHistoryGesture();
     }
     if (canvasResizeRef.current?.pointerId === e.pointerId) {
@@ -909,6 +1007,11 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
                   />
                 );
               })}
+              <SnapGuideLines
+                guides={snapGuides}
+                totalW={layoutResult.totalW}
+                totalH={layoutResult.totalH}
+              />
               <CanvasResizeHandles zoom={zoom} onResizeStart={handleCanvasResizeStart} />
             </div>
           </SortableContext>

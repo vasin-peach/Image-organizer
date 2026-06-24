@@ -90,12 +90,43 @@ export function layoutGridAspect(
   return { cells, totalW: cfg.canvasW, totalH };
 }
 
+/** Fit mosaic cells to cfg canvas when lockMode is canvas; otherwise use natural bounds. */
+function finalizeMosaicFrame(cells: CellRect[], cfg: LayoutConfig): LayoutResult {
+  const naturalW = cells.length
+    ? Math.max(...cells.map((c) => c.x + c.w)) + cfg.outerPad
+    : cfg.canvasW;
+  const naturalH = cells.length
+    ? Math.max(...cells.map((c) => c.y + c.h)) + cfg.outerPad
+    : cfg.canvasH;
+
+  if (cfg.lockMode !== 'canvas' || cells.length === 0) {
+    return { cells, totalW: naturalW, totalH: naturalH };
+  }
+
+  const targetW = cfg.canvasW;
+  const targetH = cfg.canvasH;
+  const scaleX = naturalW > 0 ? targetW / naturalW : 1;
+  const scaleY = naturalH > 0 ? targetH / naturalH : 1;
+
+  const scaled = cells.map((c) => ({
+    ...c,
+    x: cfg.outerPad + (c.x - cfg.outerPad) * scaleX,
+    y: cfg.outerPad + (c.y - cfg.outerPad) * scaleY,
+    w: c.w * scaleX,
+    h: c.h * scaleY,
+  }));
+
+  return { cells: scaled, totalW: targetW, totalH: targetH };
+}
+
 /** Mosaic / Masonry: shortest-column-first packing */
 export function layoutMosaic(
   images: ImageEntry[],
   cfg: LayoutConfig
 ): LayoutResult {
-  const { cols, cellW, gap, outerPad } = cfg;
+  const { cols, gap, outerPad } = cfg;
+  const availW = cfg.canvasW - 2 * outerPad - (cols + 1) * gap;
+  const cellW = cols > 0 ? availW / cols : availW;
   const colHeights: number[] = Array(cols).fill(outerPad + gap);
   const cells: CellRect[] = [];
 
@@ -106,7 +137,7 @@ export function layoutMosaic(
     const cellH = Math.round(cellW / aspect);
 
     cells.push({
-      x: outerPad + col * (cellW + gap) + gap,
+      x: mosaicColX(col, Array(cols).fill(cellW), gap, outerPad),
       y: colHeights[col],
       w: cellW,
       h: cellH,
@@ -119,9 +150,7 @@ export function layoutMosaic(
     colHeights[col] += cellH + gap;
   });
 
-  const totalH = Math.max(...colHeights) + outerPad;
-  const totalW = outerPad + cols * (cellW + gap) + outerPad;
-  return { cells, totalW, totalH };
+  return finalizeMosaicFrame(cells, cfg);
 }
 
 /** Mosaic with per-column width weights and per-image height scales */
@@ -163,8 +192,7 @@ export function layoutMosaicAdjustable(
     colHeights[col] += cellH + gap;
   });
 
-  const totalH = Math.max(...colHeights) + outerPad;
-  return { cells, totalW: cfg.canvasW, totalH };
+  return finalizeMosaicFrame(cells, cfg);
 }
 
 /** Grid Uniform with per-row column weights and per-row height weights */
