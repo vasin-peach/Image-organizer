@@ -1,7 +1,8 @@
 import { useEffect, useRef } from 'react';
 import { useImagesStore } from '../store/images';
 import { beginHistoryGesture, endHistoryGesture } from '../store/history';
-import type { FitMode, CropOverride } from '../types';
+import { computeCoverCropOffset } from '../lib/render/cropMath';
+import type { FitMode, CropOverride, ImageMetadata } from '../types';
 
 interface Props {
   imageId: string;
@@ -21,7 +22,8 @@ const PREVIEW_H = 180;
 function drawCropPreview(
   canvas: HTMLCanvasElement,
   img: HTMLImageElement,
-  override: CropOverride
+  override: CropOverride,
+  metadata: ImageMetadata | null
 ) {
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
@@ -42,18 +44,21 @@ function drawCropPreview(
     const drawH = imgH * fitScale;
     ctx.drawImage(img, (sw - drawW) / 2, (sh - drawH) / 2, drawW, drawH);
   } else {
-    // Cover crop (same formula as renderer.ts)
-    const { zoom, offsetX, offsetY } = override;
+    const { zoom, offsetX, offsetY, mode } = override;
+    const { cx, cy } = computeCoverCropOffset(
+      sw,
+      sh,
+      imgW,
+      imgH,
+      mode,
+      offsetX,
+      offsetY,
+      zoom,
+      metadata?.subjectCenter ?? null
+    );
     const coverScale = Math.max(sw / imgW, sh / imgH) * zoom;
     const coverW = imgW * coverScale;
     const coverH = imgH * coverScale;
-
-    let cx = (sw - coverW) / 2 + offsetX * (coverW - sw);
-    let cy = (sh - coverH) / 2 + offsetY * (coverH - sh);
-
-    cx = Math.min(0, Math.max(sw - coverW, cx));
-    cy = Math.min(0, Math.max(sh - coverH, cy));
-
     ctx.drawImage(img, cx, cy, coverW, coverH);
   }
 
@@ -69,9 +74,11 @@ function drawCropPreview(
 function CropPreviewCanvas({
   imgUrl,
   override,
+  metadata,
 }: {
   imgUrl: string;
   override: CropOverride;
+  metadata: ImageMetadata | null;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
@@ -80,17 +87,16 @@ function CropPreviewCanvas({
     const el = new Image();
     el.onload = () => {
       imgRef.current = el;
-      if (canvasRef.current) drawCropPreview(canvasRef.current, el, override);
+      if (canvasRef.current) drawCropPreview(canvasRef.current, el, override, metadata);
     };
     el.src = imgUrl;
-  }, [imgUrl]);
+  }, [imgUrl, metadata, override]);
 
-  // Redraw when override changes
   useEffect(() => {
     if (canvasRef.current && imgRef.current) {
-      drawCropPreview(canvasRef.current, imgRef.current, override);
+      drawCropPreview(canvasRef.current, imgRef.current, override, metadata);
     }
-  }, [override]);
+  }, [override, metadata]);
 
   return (
     <canvas
@@ -135,7 +141,7 @@ export default function CropOverlayModal({ imageId, onClose }: Props) {
 
         {/* Live canvas preview */}
         <div className="rounded overflow-hidden border border-white/10">
-          <CropPreviewCanvas imgUrl={img.url} override={img.cropOverride} />
+          <CropPreviewCanvas imgUrl={img.url} override={img.cropOverride} metadata={img.metadata} />
         </div>
 
         {/* Fit mode */}

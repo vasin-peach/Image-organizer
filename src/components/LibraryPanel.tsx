@@ -16,7 +16,13 @@ function getWorker(): Worker {
     workerInstance.onmessage = (e: MessageEvent<{ id: string; metadata?: ImageMetadata; error?: string }>) => {
       const { id, metadata } = e.data;
       const cb = pendingCallbacks.get(id);
-      if (cb && metadata) { cb(metadata); pendingCallbacks.delete(id); }
+      if (!cb) return;
+      pendingCallbacks.delete(id);
+      if (metadata) {
+        cb(metadata);
+      } else {
+        useImagesStore.getState().setAnalyzing(id, false);
+      }
     };
   }
   return workerInstance;

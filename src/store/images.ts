@@ -14,7 +14,7 @@ interface ImagesState {
   setMetadata: (id: string, metadata: ImageMetadata) => void;
   setAnalyzing: (id: string, val: boolean) => void;
   setCropOverride: (id: string, override: Partial<CropOverride>) => void;
-  setOrderedIds: (ids: string[]) => void;
+  setOrderedIds: (ids: string[], options?: { skipHistory?: boolean }) => void;
   setSelectedId: (id: string | null) => void;
   openCropModal: (id: string) => void;
   closeCropModal: () => void;
@@ -39,6 +39,8 @@ export const useImagesStore = create<ImagesState>((set, get) => ({
 
   removeImage: (id) => {
     recordHistory();
+    const removed = get().images.find((img) => img.id === id);
+    if (removed) URL.revokeObjectURL(removed.url);
     set((s) => ({
       images: s.images.filter((img) => img.id !== id),
       orderedIds: s.orderedIds.filter((i) => i !== id),
@@ -78,8 +80,8 @@ export const useImagesStore = create<ImagesState>((set, get) => ({
       ),
     })),
 
-  setOrderedIds: (ids) => {
-    recordHistory();
+  setOrderedIds: (ids, options) => {
+    if (!options?.skipHistory) recordHistory();
     set({ orderedIds: ids });
   },
 

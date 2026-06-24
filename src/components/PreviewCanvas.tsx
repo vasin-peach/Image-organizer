@@ -46,7 +46,7 @@ import { applyEdgeSnap, type SnapGuide } from '../lib/layout/snapGuides';
 import type { ImageEntry } from '../types';
 import type { CellRect } from '../lib/layout/layouts';
 import CropOverlayModal from './CropOverlayModal';
-import { beginHistoryGesture, endHistoryGesture } from '../store/history';
+import { beginHistoryGesture, endHistoryGesture, recordHistory } from '../store/history';
 
 const DOUBLE_CLICK_MS = 300;
 const DRAG_THRESHOLD = 5;
@@ -58,6 +58,13 @@ const CROP_ZOOM_GESTURE_MS = 400;
 
 // ─── Image cache ──────────────────────────────────────────────────────────────
 const imageCache = new Map<string, HTMLImageElement>();
+
+function pruneImageCache(validIds: Set<string>) {
+  for (const id of imageCache.keys()) {
+    if (!validIds.has(id)) imageCache.delete(id);
+  }
+}
+
 function loadImage(img: ImageEntry): Promise<HTMLImageElement> {
   if (imageCache.has(img.id)) return Promise.resolve(imageCache.get(img.id)!);
   return new Promise((resolve) => {
@@ -380,8 +387,19 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
     closeCropModal,
     setSelectedId,
   } = useImagesStore();
-  const { layout, sort, style, exportCfg, setSort, setLayout, cellAdjust, setCellAdjust, mosaicAdjust, setMosaicAdjust } =
-    useConfigStore();
+  const {
+    layout,
+    sort,
+    style,
+    exportCfg,
+    setSort,
+    setLayout,
+    cellAdjust,
+    setCellAdjust,
+    mosaicAdjust,
+    setMosaicAdjust,
+    resetMosaicAdjust,
+  } = useConfigStore();
 
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
@@ -398,6 +416,8 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
   const canvasResizeRef = useRef<CanvasResizeDrag | null>(null);
   const cropZoomGestureTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reorderListenersRef = useRef<Map<string, (e: React.PointerEvent) => void>>(new Map());
+  const userViewAdjustedRef = useRef(false);
+  const prevImageCountRef = useRef(0);
 
   const registerReorderListener = useCallback(
     (id: string, handler: ((e: React.PointerEvent) => void) | null) => {
@@ -417,6 +437,49 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
     () => solveLayout(layout, Math.max(1, sorted.length), layout.lockMode).layout,
     [layout, sorted.length]
   );
+
+  const mosaicImageSizeKey = useMemo(
+    () =>
+      sorted
+        .map((img) => `${img.id}:${img.width}x${img.height}`)
+        .sort()
+        .join('|'),
+    [sorted]
+  );
+
+  const mosaicRecalcKey = useMemo(() => {
+    if (solvedLayout.mode !== 'mosaic') return '';
+    return [
+      solvedLayout.canvasW,
+      solvedLayout.canvasH,
+      solvedLayout.gap,
+      solvedLayout.outerPad,
+      solvedLayout.cols,
+      solvedLayout.cellW,
+      mosaicImageSizeKey,
+    ].join(';');
+  }, [
+    solvedLayout.mode,
+    solvedLayout.canvasW,
+    solvedLayout.canvasH,
+    solvedLayout.gap,
+    solvedLayout.outerPad,
+    solvedLayout.cols,
+    solvedLayout.cellW,
+    mosaicImageSizeKey,
+  ]);
+
+  const mosaicRecalcKeyRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (solvedLayout.mode !== 'mosaic') {
+      mosaicRecalcKeyRef.current = null;
+      return;
+    }
+    if (mosaicRecalcKeyRef.current === mosaicRecalcKey) return;
+    mosaicRecalcKeyRef.current = mosaicRecalcKey;
+    resetMosaicAdjust(solvedLayout.cols, { skipHistory: true });
+  }, [mosaicRecalcKey, solvedLayout.mode, solvedLayout.cols, resetMosaicAdjust]);
 
   useEffect(() => {
     const normalized = normalizeCellAdjust(
@@ -460,7 +523,7 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
         effectiveCellAdjust,
         solvedLayout.mode === 'mosaic' ? effectiveMosaicAdjust : null
       ),
-    [sorted, solvedLayout, effectiveCellAdjust, effectiveMosaicAdjust]
+    [sorted, solvedLayout, effectiveCellAdjust, effectiveMosaicAdjust, mosaicImageSizeKey]
   );
 
   const showCellResizeHandles =
@@ -475,6 +538,10 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
   useEffect(() => {
     renderArgsRef.current = { sorted, layoutResult, style, layout: solvedLayout };
   }, [sorted, layoutResult, style, solvedLayout]);
+
+  useEffect(() => {
+    pruneImageCache(new Set(images.map((i) => i.id)));
+  }, [images]);
 
   useEffect(() => {
     let cancelled = false;
@@ -497,6 +564,16 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
+
+    const imageCountChanged = prevImageCountRef.current !== sorted.length;
+    prevImageCountRef.current = sorted.length;
+
+    if (userViewAdjustedRef.current && !imageCountChanged) return;
+
+    if (imageCountChanged) {
+      userViewAdjustedRef.current = false;
+    }
+
     const { clientWidth, clientHeight } = container;
     const fitZoom = Math.min(
       (clientWidth - 32) / layoutResult.totalW,
@@ -505,7 +582,7 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
     );
     setZoom(fitZoom);
     setPan({ x: 0, y: 0 });
-  }, [layoutResult.totalW, layoutResult.totalH]);
+  }, [layoutResult.totalW, layoutResult.totalH, sorted.length]);
 
   const applyCanvasSize = useCallback(
     (canvasW: number, canvasH: number) => {
@@ -551,7 +628,10 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
         adjustCropZoom(cropZoomTargetId, e.deltaY);
         return;
       }
-      setZoom((z) => Math.max(0.05, Math.min(4, z * (e.deltaY > 0 ? 0.9 : 1.1))));
+      setZoom((z) => {
+        userViewAdjustedRef.current = true;
+        return Math.max(0.05, Math.min(4, z * (e.deltaY > 0 ? 0.9 : 1.1)));
+      });
     },
     [cropZoomTargetId, adjustCropZoom]
   );
@@ -723,8 +803,17 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
         e.stopPropagation();
         e.preventDefault();
 
-        const heightScale = effectiveMosaicAdjust.heightScales[img.id] ?? 1;
-        const baseHeight = cell.h / heightScale;
+        const cols = solvedLayout.cols;
+        const colWeightSum =
+          effectiveMosaicAdjust.colWeights.reduce((s, w) => s + w, 0) || cols;
+        const availW =
+          solvedLayout.canvasW - 2 * solvedLayout.outerPad - (cols + 1) * solvedLayout.gap;
+        const colWidths = effectiveMosaicAdjust.colWeights.map(
+          (w) => (w / colWeightSum) * availW
+        );
+        const cellW = colWidths[cell.colIndex];
+        const aspect = img.width > 0 ? img.width / img.height : 1;
+        const baseHeight = Math.max(1, cellW / aspect);
 
         cellResizeRef.current = {
           layout: 'mosaic',
@@ -732,7 +821,7 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
           imageId: img.id,
           pointerId: e.pointerId,
           startClient: e.clientY,
-          baseHeight: Math.max(1, baseHeight),
+          baseHeight,
         };
         beginHistoryGesture();
         (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
@@ -800,13 +889,30 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
             ? (e.clientX - cellResize.startClient) / zoom
             : (e.clientY - cellResize.startClient) / zoom;
 
-        const edgeInfo = getDraggedCellEdge(cellResize, layoutResult.cells);
+        const cfgState = useConfigStore.getState();
+        const liveCellAdjust = normalizeCellAdjust(
+          cfgState.cellAdjust,
+          solvedLayout.rows,
+          solvedLayout.cols
+        );
+        const liveMosaicAdjust = normalizeMosaicAdjust(
+          cfgState.mosaicAdjust,
+          solvedLayout.cols
+        );
+        const liveCells = computeLayout(
+          sorted,
+          solvedLayout,
+          liveCellAdjust,
+          solvedLayout.mode === 'mosaic' ? liveMosaicAdjust : null
+        ).cells;
+
+        const edgeInfo = getDraggedCellEdge(cellResize, liveCells);
         const { deltaPx, guide } = edgeInfo
           ? applyEdgeSnap(
               rawDeltaPx,
               edgeInfo.edge,
               edgeInfo.axis,
-              layoutResult.cells,
+              liveCells,
               solvedLayout.canvasW,
               solvedLayout.canvasH,
               solvedLayout.outerPad,
@@ -822,34 +928,38 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
           if (cellResize.kind === 'col') {
             setCellAdjust(
               adjustColWeight(
-                effectiveCellAdjust,
+                liveCellAdjust,
                 cellResize.rowIndex,
                 cellResize.colIndex,
                 deltaWeight,
                 cellResize.cellCountInRow
-              )
+              ),
+              { skipHistory: true }
             );
             cellResize.startClient = e.clientX;
           } else {
             setCellAdjust(
-              adjustRowWeight(effectiveCellAdjust, cellResize.rowIndex, deltaWeight)
+              adjustRowWeight(liveCellAdjust, cellResize.rowIndex, deltaWeight),
+              { skipHistory: true }
             );
             cellResize.startClient = e.clientY;
           }
         } else if (cellResize.kind === 'col') {
           const deltaWeight = (deltaPx / cellResize.availPx) * cellResize.totalWeight;
           setMosaicAdjust(
-            adjustMosaicColWeight(effectiveMosaicAdjust, cellResize.colIndex, deltaWeight)
+            adjustMosaicColWeight(liveMosaicAdjust, cellResize.colIndex, deltaWeight),
+            { skipHistory: true }
           );
           cellResize.startClient = e.clientX;
         } else {
           const deltaScale = deltaPx / cellResize.baseHeight;
           setMosaicAdjust(
             adjustMosaicHeightScale(
-              effectiveMosaicAdjust,
+              liveMosaicAdjust,
               cellResize.imageId,
               deltaScale
-            )
+            ),
+            { skipHistory: true }
           );
           cellResize.startClient = e.clientY;
         }
@@ -874,15 +984,11 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
     [
       zoom,
       setCropOverride,
-      effectiveCellAdjust,
-      effectiveMosaicAdjust,
       setCellAdjust,
       setMosaicAdjust,
       applyCanvasSize,
-      layoutResult.cells,
-      solvedLayout.canvasW,
-      solvedLayout.canvasH,
-      solvedLayout.outerPad,
+      sorted,
+      solvedLayout,
     ]
   );
 
@@ -908,10 +1014,11 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
     setActiveDragId(String(e.active.id));
     setReorderArmedId(null);
     if (sort.mode !== 'none') {
+      recordHistory();
       const sortedIds = sorted.map((i) => i.id);
       const excludedIds = images.filter((i) => !i.included).map((i) => i.id);
-      setOrderedIds([...sortedIds, ...excludedIds]);
-      setSort({ mode: 'none' });
+      setOrderedIds([...sortedIds, ...excludedIds], { skipHistory: true });
+      setSort({ mode: 'none' }, { skipHistory: true });
       setSwitchedToManual(true);
       setTimeout(() => setSwitchedToManual(false), 2500);
     }
@@ -1048,11 +1155,20 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
 
       <div className="absolute bottom-2 right-2 bg-black/60 text-white/60 text-xs px-2 py-1 rounded flex items-center gap-2">
         <span>{Math.round(zoom * 100)}%</span>
-        <button className="hover:text-white transition-colors" onClick={() => setZoom(1)}>1:1</button>
+        <button
+          className="hover:text-white transition-colors"
+          onClick={() => {
+            userViewAdjustedRef.current = true;
+            setZoom(1);
+          }}
+        >
+          1:1
+        </button>
         <button
           className="hover:text-white transition-colors"
           onClick={() => {
             if (!containerRef.current) return;
+            userViewAdjustedRef.current = false;
             const { clientWidth, clientHeight } = containerRef.current;
             setZoom(
               Math.min(

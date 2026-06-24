@@ -82,7 +82,7 @@ interface ConfigState {
   mosaicAdjust: MosaicAdjust | null;
 
   setLayout: (patch: Partial<LayoutConfig>, options?: { skipHistory?: boolean }) => void;
-  setSort: (patch: Partial<SortConfig>) => void;
+  setSort: (patch: Partial<SortConfig>, options?: { skipHistory?: boolean }) => void;
   setStyle: (patch: Partial<StyleConfig>) => void;
   setExport: (patch: Partial<ExportConfig>) => void;
   setActiveTab: (tab: ControlTab) => void;
@@ -90,7 +90,7 @@ interface ConfigState {
   setCellAdjust: (adjust: CellAdjust, options?: { skipHistory?: boolean }) => void;
   resetCellAdjust: (rows: number, cols: number) => void;
   setMosaicAdjust: (adjust: MosaicAdjust, options?: { skipHistory?: boolean }) => void;
-  resetMosaicAdjust: (cols: number) => void;
+  resetMosaicAdjust: (cols: number, options?: { skipHistory?: boolean }) => void;
   savePreset: (name: string) => void;
   loadPreset: (id: string) => void;
   deletePreset: (id: string) => void;
@@ -127,8 +127,8 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
     set((s) => ({ layout: { ...s.layout, ...patch } }));
   },
 
-  setSort: (patch) => {
-    recordHistory();
+  setSort: (patch, options) => {
+    if (!options?.skipHistory) recordHistory();
     set((s) => ({ sort: { ...s.sort, ...patch } }));
   },
 
@@ -157,8 +157,8 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
     set({ mosaicAdjust: adjust });
   },
 
-  resetMosaicAdjust: (cols) => {
-    recordHistory();
+  resetMosaicAdjust: (cols, options) => {
+    if (!options?.skipHistory) recordHistory();
     set({ mosaicAdjust: createUniformMosaicAdjust(cols) });
   },
 

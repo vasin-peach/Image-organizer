@@ -1,5 +1,6 @@
 import type { ImageEntry, LayoutConfig, StyleConfig, ExportConfig, FitMode } from '../../types';
 import type { CellRect, LayoutResult } from '../layout/layouts';
+import { computeCoverCropOffset } from './cropMath';
 
 export interface RenderOptions {
   layout: LayoutResult;
@@ -18,7 +19,8 @@ function drawImageInCell(
   offsetY: number,
   zoom: number,
   borderRadius: number,
-  scale: number
+  scale: number,
+  subjectCenter?: { x: number; y: number } | null
 ): void {
   const { x, y, w, h } = cell;
   const sx = x * scale;
@@ -28,8 +30,6 @@ function drawImageInCell(
 
   const imgW = img instanceof HTMLImageElement ? img.naturalWidth : img.width;
   const imgH = img instanceof HTMLImageElement ? img.naturalHeight : img.height;
-
-  let srcX = 0, srcY = 0, srcW = imgW, srcH = imgH;
 
   if (mode === 'fit') {
     // Letterbox — draw the full image centred with padding
@@ -45,21 +45,20 @@ function drawImageInCell(
     return;
   }
 
-  // For 'smart' and 'center': cover crop
+  const { cx, cy } = computeCoverCropOffset(
+    sw,
+    sh,
+    imgW,
+    imgH,
+    mode,
+    offsetX,
+    offsetY,
+    zoom,
+    subjectCenter
+  );
   const coverScale = Math.max(sw / imgW, sh / imgH) * zoom;
   const coverW = imgW * coverScale;
   const coverH = imgH * coverScale;
-
-  let cx = (sw - coverW) / 2;
-  let cy = (sh - coverH) / 2;
-
-  // Apply offset (offsetX/Y in -0.5..0.5 of excess)
-  cx += offsetX * (coverW - sw);
-  cy += offsetY * (coverH - sh);
-
-  // Clamp
-  cx = Math.min(0, Math.max(sw - coverW, cx));
-  cy = Math.min(0, Math.max(sh - coverH, cy));
 
   ctx.save();
   ctx.beginPath();
@@ -67,8 +66,6 @@ function drawImageInCell(
   ctx.clip();
   ctx.drawImage(img, sx + cx, sy + cy, coverW, coverH);
   ctx.restore();
-
-  void srcX; void srcY; void srcW; void srcH;
 }
 
 function roundRect(
@@ -128,7 +125,8 @@ export async function renderToCanvas(
       offsetY,
       zoom,
       style.borderRadius,
-      scale
+      scale,
+      img.metadata?.subjectCenter ?? null
     );
 
     if (style.showBorder) {

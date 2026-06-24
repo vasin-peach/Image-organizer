@@ -36,7 +36,7 @@ export interface HistorySnapshot {
 interface HistoryState {
   past: HistorySnapshot[];
   future: HistorySnapshot[];
-  gesturing: boolean;
+  gestureCount: number;
   canUndo: boolean;
   canRedo: boolean;
 
@@ -80,11 +80,8 @@ export function captureSnapshot(): HistorySnapshot {
 
 function applySnapshot(snap: HistorySnapshot): void {
   const current = useImagesStore.getState().images;
-  const snapIds = new Set(snap.images.map((i) => i.id));
   for (const img of current) {
-    if (!snapIds.has(img.id)) {
-      URL.revokeObjectURL(img.url);
-    }
+    URL.revokeObjectURL(img.url);
   }
 
   useConfigStore.setState({
@@ -96,7 +93,10 @@ function applySnapshot(snap: HistorySnapshot): void {
   });
 
   useImagesStore.setState({
-    images: snap.images.map(cloneImageEntry),
+    images: snap.images.map((img) => ({
+      ...cloneImageEntry(img),
+      url: URL.createObjectURL(img.file),
+    })),
     orderedIds: [...snap.orderedIds],
   });
 }
@@ -111,7 +111,7 @@ function syncFlags(past: HistorySnapshot[], future: HistorySnapshot[]) {
 export const useHistoryStore = create<HistoryState>((set, get) => ({
   past: [],
   future: [],
-  gesturing: false,
+  gestureCount: 0,
   canUndo: false,
   canRedo: false,
 
@@ -157,19 +157,23 @@ export const useHistoryStore = create<HistoryState>((set, get) => ({
   clear: () => set({ past: [], future: [], ...syncFlags([], []) }),
 
   beginGesture: () => {
-    const { gesturing } = get();
-    if (gesturing) return;
-    get().pushSnapshot(captureSnapshot());
-    set({ gesturing: true });
+    set((s) => {
+      if (s.gestureCount === 0) {
+        get().pushSnapshot(captureSnapshot());
+      }
+      return { gestureCount: s.gestureCount + 1 };
+    });
   },
 
-  endGesture: () => set({ gesturing: false }),
+  endGesture: () => {
+    set((s) => ({ gestureCount: Math.max(0, s.gestureCount - 1) }));
+  },
 }));
 
 /** Record current state before a discrete edit (skipped during gestures). */
 export function recordHistory(): void {
-  const { gesturing, pushSnapshot } = useHistoryStore.getState();
-  if (gesturing) return;
+  const { gestureCount, pushSnapshot } = useHistoryStore.getState();
+  if (gestureCount > 0) return;
   pushSnapshot(captureSnapshot());
 }
 
