@@ -232,8 +232,10 @@ function SortableCell({
 
       <div
         className={`absolute inset-0 border-2 rounded-sm pointer-events-none transition-colors ${
-          isZoomTarget && canCropZoom
-            ? 'border-indigo-400/70'
+          isZoomTarget
+            ? canCropZoom
+              ? 'border-indigo-400/70'
+              : 'border-white/40'
             : 'border-transparent group-hover:border-white/20'
         }`}
       />
@@ -638,13 +640,28 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
 
   const handleCellWheel = useCallback(
     (e: React.WheelEvent, img: ImageEntry) => {
+      if (cropZoomTargetId !== img.id) return;
       e.stopPropagation();
       e.preventDefault();
-      setCropZoomTargetId(img.id);
-      setSelectedId(img.id);
       adjustCropZoom(img.id, e.deltaY);
     },
-    [adjustCropZoom, setSelectedId]
+    [cropZoomTargetId, adjustCropZoom]
+  );
+
+  const clearImageSelection = useCallback(() => {
+    setCropZoomTargetId(null);
+    setSelectedId(null);
+  }, [setSelectedId]);
+
+  const handleContainerBackgroundPointerDown = useCallback(
+    (e: React.PointerEvent) => {
+      if (e.button !== 0) return;
+      const frame = containerRef.current?.querySelector('[data-canvas-frame]');
+      if (frame && !frame.contains(e.target as Node)) {
+        clearImageSelection();
+      }
+    },
+    [clearImageSelection]
   );
 
   const onMouseDown = useCallback((e: React.MouseEvent) => {
@@ -674,6 +691,7 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
         lastClickRef.current = null;
         repositionDragRef.current = null;
         setCropZoomTargetId(null);
+        setSelectedId(null);
         flushSync(() => setReorderArmedId(img.id));
         const listener = reorderListenersRef.current.get(img.id);
         listener?.(e);
@@ -1073,6 +1091,7 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
       onMouseMove={onMouseMove}
       onMouseUp={onMouseUp}
       onMouseLeave={onMouseUp}
+      onPointerDown={handleContainerBackgroundPointerDown}
       onWheel={onWheel}
       onPointerMove={onContainerPointerMove}
       onPointerUp={onContainerPointerUp}
@@ -1091,7 +1110,7 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
           onDragEnd={handleDragEnd}
         >
           <SortableContext items={sorted.map((i) => i.id)} strategy={rectSortingStrategy}>
-            <div style={canvasContainerStyle}>
+            <div style={canvasContainerStyle} data-canvas-frame>
               <canvas ref={canvasRef} className="block absolute inset-0" />
               {layoutResult.cells.map((cell) => {
                 const img = sorted.find((i) => i.id === cell.imageId);
@@ -1188,7 +1207,7 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
         <div className="absolute top-2 left-2 bg-black/60 text-white/40 text-[10px] px-2 py-1 rounded space-y-0.5">
           <div>{sorted.length} images · {layoutResult.totalW}×{layoutResult.totalH}px</div>
           <div className="text-white/25">
-            ลาก = ปรับ crop · คลิก + scroll = ซูม · ดับเบิลคลิก = สลับลำดับ
+            คลิกเลือกภาพ · scroll = ซูม · ลาก = ปรับ crop · ดับเบิลคลิก = สลับลำดับ · คลิกนอก frame = ยกเลิกเลือก
             {showCellResizeHandles ? ' · ลากขอบ = ปรับขนาดช่อง' : ''}
             {' · Alt+scroll = ซูม preview'}
           </div>
