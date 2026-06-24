@@ -42,7 +42,7 @@ import {
   normalizeMosaicAdjust,
   setMosaicHeightScale,
 } from '../lib/layout/mosaicAdjust';
-import { applyEdgeSnap, type SnapGuide } from '../lib/layout/snapGuides';
+import { getUnstableSnapEdges, resolveSnappedEdge, type SnapGuide } from '../lib/layout/snapGuides';
 import type { ImageEntry } from '../types';
 import type { CellRect } from '../lib/layout/layouts';
 import CropOverlayModal from './CropOverlayModal';
@@ -120,6 +120,7 @@ type CellResizeDrag =
       startEdge: number;
       availPx: number;
       totalWeight: number;
+      activeSnapTarget?: number;
     }
   | {
       layout: 'mosaic';
@@ -130,6 +131,7 @@ type CellResizeDrag =
       startEdge: number;
       availPx: number;
       totalWeight: number;
+      activeSnapTarget?: number;
     }
   | {
       layout: 'mosaic';
@@ -140,6 +142,7 @@ type CellResizeDrag =
       startEdge: number;
       startScale: number;
       baseHeight: number;
+      activeSnapTarget?: number;
     };
 
 type CanvasResizeDrag = {
@@ -177,22 +180,23 @@ function getSnapExcludeEdges(
   cellResize: CellResizeDrag,
   cells: CellRect[]
 ): number[] {
+  const unstable = getUnstableSnapEdges(cellResize, cells);
   if (cellResize.layout === 'grid') {
     if (cellResize.kind === 'col') {
       const cell = cells.find(
         (c) => c.rowIndex === cellResize.rowIndex && c.colIndex === cellResize.colIndex
       );
-      return cell ? [cell.x + cell.w] : [];
+      return cell ? [cell.x + cell.w, ...unstable] : unstable;
     }
     const cell = cells.find((c) => c.rowIndex === cellResize.rowIndex);
-    return cell ? [cell.y + cell.h] : [];
+    return cell ? [cell.y + cell.h, ...unstable] : unstable;
   }
   if (cellResize.kind === 'col') {
     const cell = cells.find((c) => c.colIndex === cellResize.colIndex);
-    return cell ? [cell.x + cell.w] : [];
+    return cell ? [cell.x + cell.w, ...unstable] : unstable;
   }
   const cell = cells.find((c) => c.imageId === cellResize.imageId);
-  return cell ? [cell.y + cell.h] : [];
+  return cell ? [cell.y + cell.h, ...unstable] : unstable;
 }
 
 // ─── Single sortable cell overlay ─────────────────────────────────────────────
@@ -976,28 +980,24 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
             canvasH,
             'y'
           );
-          const desiredEdge = cellResize.startEdge + canvasDeltaY;
-          const edgeInfo = getDraggedCellEdge(cellResize, liveCells);
-          const currentEdge = edgeInfo?.edge ?? desiredEdge;
-          let deltaPx = desiredEdge - currentEdge;
-
-          const canvasZoomY = frameRect.height / canvasH;
           const snapZoom = canvasZoomY > 0 ? 1 / canvasZoomY : zoom;
-          const snapped = applyEdgeSnap(
-            deltaPx,
-            currentEdge,
+          const { finalEdge, guide, snapTarget } = resolveSnappedEdge(
+            cellResize.startEdge,
+            canvasDeltaY,
             'y',
             liveCells,
             canvasW,
             canvasH,
             solvedLayout.outerPad,
             snapZoom,
-            getSnapExcludeEdges(cellResize, liveCells)
+            getSnapExcludeEdges(cellResize, liveCells),
+            cellResize.activeSnapTarget
           );
-          deltaPx = snapped.deltaPx;
-          setSnapGuides(snapped.guide ? [snapped.guide] : []);
+          cellResizeRef.current = { ...cellResize, activeSnapTarget: snapTarget };
+          setSnapGuides(guide ? [guide] : []);
 
-          const desiredScale = cellResize.startScale + deltaPx / cellResize.baseHeight;
+          const desiredScale =
+            cellResize.startScale + (finalEdge - cellResize.startEdge) / cellResize.baseHeight;
           setMosaicAdjust(
             setMosaicHeightScale(liveMosaicAdjust, cellResize.imageId, desiredScale),
             { skipHistory: true }
@@ -1013,30 +1013,27 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
           isCol ? canvasW : canvasH,
           axis
         );
-        const desiredEdge = cellResize.startEdge + canvasDelta;
-        const edgeInfo = getDraggedCellEdge(cellResize, liveCells);
-        const currentEdge = edgeInfo?.edge ?? desiredEdge;
-        let deltaPx = desiredEdge - currentEdge;
+        const snapZoom = (isCol ? canvasZoomX : canvasZoomY) > 0
+          ? 1 / (isCol ? canvasZoomX : canvasZoomY)
+          : zoom;
+        const { finalEdge, guide, snapTarget } = resolveSnappedEdge(
+          cellResize.startEdge,
+          canvasDelta,
+          axis,
+          liveCells,
+          canvasW,
+          canvasH,
+          solvedLayout.outerPad,
+          snapZoom,
+          getSnapExcludeEdges(cellResize, liveCells),
+          cellResize.activeSnapTarget
+        );
+        cellResizeRef.current = { ...cellResize, activeSnapTarget: snapTarget };
+        setSnapGuides(guide ? [guide] : []);
 
-        if (edgeInfo) {
-          const canvasZoom = isCol ? canvasZoomX : canvasZoomY;
-          const snapZoom = canvasZoom > 0 ? 1 / canvasZoom : zoom;
-          const snapped = applyEdgeSnap(
-            deltaPx,
-            currentEdge,
-            edgeInfo.axis,
-            liveCells,
-            canvasW,
-            canvasH,
-            solvedLayout.outerPad,
-            snapZoom,
-            getSnapExcludeEdges(cellResize, liveCells)
-          );
-          deltaPx = snapped.deltaPx;
-          setSnapGuides(snapped.guide ? [snapped.guide] : []);
-        } else {
-          setSnapGuides([]);
-        }
+        const edgeInfo = getDraggedCellEdge(cellResize, liveCells);
+        const currentEdge = edgeInfo?.edge ?? finalEdge;
+        const deltaPx = finalEdge - currentEdge;
 
         if (cellResize.layout === 'grid') {
           const deltaWeight = (deltaPx / cellResize.availPx) * cellResize.totalWeight;

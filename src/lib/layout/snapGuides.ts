@@ -52,6 +52,79 @@ export function collectSnapTargets(
   return [...targets].sort((a, b) => a - b);
 }
 
+/** Edges that shift when the active resize handle moves — exclude to prevent snap oscillation. */
+export function getUnstableSnapEdges(
+  cellResize:
+    | { layout: 'grid'; kind: 'col' | 'row'; rowIndex: number; colIndex: number }
+    | { layout: 'mosaic'; kind: 'col'; colIndex: number }
+    | { layout: 'mosaic'; kind: 'height'; imageId: string },
+  cells: CellRect[]
+): number[] {
+  if (cellResize.layout === 'grid') {
+    if (cellResize.kind === 'row') {
+      return cells
+        .filter((c) => c.rowIndex > cellResize.rowIndex)
+        .flatMap((c) => [c.y, c.y + c.h]);
+    }
+    return cells
+      .filter(
+        (c) =>
+          c.rowIndex === cellResize.rowIndex && c.colIndex > cellResize.colIndex
+      )
+      .flatMap((c) => [c.x, c.x + c.w]);
+  }
+  if (cellResize.kind === 'height') {
+    const dragged = cells.find((c) => c.imageId === cellResize.imageId);
+    if (!dragged) return [];
+    return cells
+      .filter((c) => c.colIndex === dragged.colIndex && c.y > dragged.y + 0.5)
+      .flatMap((c) => [c.y, c.y + c.h]);
+  }
+  return [];
+}
+
+export function resolveSnappedEdge(
+  startEdge: number,
+  canvasDelta: number,
+  axis: SnapAxis,
+  cells: CellRect[],
+  canvasW: number,
+  canvasH: number,
+  outerPad: number,
+  snapZoom: number,
+  excludeEdges: number[],
+  activeSnapTarget?: number
+): { finalEdge: number; guide: SnapGuide | null; snapTarget: number | undefined } {
+  const proposedEdge = startEdge + canvasDelta;
+  const threshold = SNAP_THRESHOLD_PX / snapZoom;
+  const releaseThreshold = threshold * 1.75;
+
+  if (activeSnapTarget !== undefined) {
+    if (Math.abs(proposedEdge - activeSnapTarget) <= releaseThreshold) {
+      return {
+        finalEdge: activeSnapTarget,
+        guide: { axis, position: activeSnapTarget },
+        snapTarget: activeSnapTarget,
+      };
+    }
+  }
+
+  const targets = collectSnapTargets(
+    cells,
+    canvasW,
+    canvasH,
+    outerPad,
+    axis,
+    excludeEdges
+  );
+  const snap = snapToNearest(proposedEdge, targets, threshold, axis);
+
+  if (snap) {
+    return { finalEdge: snap.snapped, guide: snap.guide, snapTarget: snap.snapped };
+  }
+  return { finalEdge: proposedEdge, guide: null, snapTarget: undefined };
+}
+
 export function snapToNearest(
   proposed: number,
   targets: number[],
