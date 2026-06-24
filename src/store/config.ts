@@ -7,8 +7,10 @@ import type {
   ControlTab,
   Preset,
   CellAdjust,
+  MosaicAdjust,
 } from '../types';
 import { createUniformCellAdjust } from '../lib/layout/cellAdjust';
+import { createUniformMosaicAdjust } from '../lib/layout/mosaicAdjust';
 
 export type MaxResolution = 0 | 720 | 1080 | 1920 | 2560 | 3840;
 export const MAX_RES_OPTIONS: { value: MaxResolution; label: string }[] = [
@@ -76,6 +78,7 @@ interface ConfigState {
   presets: Preset[];
   maxResolution: MaxResolution;
   cellAdjust: CellAdjust | null;
+  mosaicAdjust: MosaicAdjust | null;
 
   setLayout: (patch: Partial<LayoutConfig>) => void;
   setSort: (patch: Partial<SortConfig>) => void;
@@ -85,6 +88,8 @@ interface ConfigState {
   setMaxResolution: (v: MaxResolution) => void;
   setCellAdjust: (adjust: CellAdjust) => void;
   resetCellAdjust: (rows: number, cols: number) => void;
+  setMosaicAdjust: (adjust: MosaicAdjust) => void;
+  resetMosaicAdjust: (cols: number) => void;
   savePreset: (name: string) => void;
   loadPreset: (id: string) => void;
   deletePreset: (id: string) => void;
@@ -114,6 +119,7 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
   presets: loadPresetsFromStorage(),
   maxResolution: 1920,
   cellAdjust: null,
+  mosaicAdjust: null,
 
   setLayout: (patch) =>
     set((s) => ({ layout: { ...s.layout, ...patch } })),
@@ -133,6 +139,11 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
 
   resetCellAdjust: (rows, cols) =>
     set({ cellAdjust: createUniformCellAdjust(rows, cols) }),
+
+  setMosaicAdjust: (adjust) => set({ mosaicAdjust: adjust }),
+
+  resetMosaicAdjust: (cols) =>
+    set({ mosaicAdjust: createUniformMosaicAdjust(cols) }),
 
   setActiveTab: (tab) => set({ activeTab: tab }),
 

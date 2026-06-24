@@ -65,6 +65,12 @@ export interface CellAdjust {
   colWeights: number[][];
 }
 
+export interface MosaicAdjust {
+  cols: number;
+  colWeights: number[];
+  heightScales: Record<string, number>;
+}
+
 export type SortMode =
   | 'none'
   | 'dominantColor'

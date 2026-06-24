@@ -1,5 +1,6 @@
-import type { ImageEntry, LayoutConfig, CellAdjust } from '../../types';
+import type { ImageEntry, LayoutConfig, CellAdjust, MosaicAdjust } from '../../types';
 import { createUniformCellAdjust } from './cellAdjust';
+import { createUniformMosaicAdjust, mosaicColX } from './mosaicAdjust';
 
 export interface CellRect {
   x: number;
@@ -123,6 +124,49 @@ export function layoutMosaic(
   return { cells, totalW, totalH };
 }
 
+/** Mosaic with per-column width weights and per-image height scales */
+export function layoutMosaicAdjustable(
+  images: ImageEntry[],
+  cfg: LayoutConfig,
+  mosaicAdjust: MosaicAdjust
+): LayoutResult {
+  const { cols, gap, outerPad } = cfg;
+  const adjust =
+    mosaicAdjust.cols === cols ? mosaicAdjust : createUniformMosaicAdjust(cols);
+
+  const colWeightSum = adjust.colWeights.reduce((s, w) => s + w, 0) || cols;
+  const availW = cfg.canvasW - 2 * outerPad - (cols + 1) * gap;
+  const colWidths = adjust.colWeights.map((w) => (w / colWeightSum) * availW);
+
+  const colHeights: number[] = Array(cols).fill(outerPad + gap);
+  const cells: CellRect[] = [];
+
+  images.forEach((img, i) => {
+    const minH = Math.min(...colHeights);
+    const col = colHeights.indexOf(minH);
+    const aspect = img.width > 0 ? img.width / img.height : 1;
+    const cellW = colWidths[col];
+    const heightScale = adjust.heightScales[img.id] ?? 1;
+    const cellH = Math.round((cellW / aspect) * heightScale);
+
+    cells.push({
+      x: mosaicColX(col, colWidths, gap, outerPad),
+      y: colHeights[col],
+      w: cellW,
+      h: cellH,
+      imageId: img.id,
+      imageIndex: i,
+      rowIndex: 0,
+      colIndex: col,
+    });
+
+    colHeights[col] += cellH + gap;
+  });
+
+  const totalH = Math.max(...colHeights) + outerPad;
+  return { cells, totalW: cfg.canvasW, totalH };
+}
+
 /** Grid Uniform with per-row column weights and per-row height weights */
 export function layoutGridAdjustable(
   images: ImageEntry[],
@@ -175,7 +219,8 @@ export function layoutGridAdjustable(
 export function computeLayout(
   images: ImageEntry[],
   cfg: LayoutConfig,
-  cellAdjust?: CellAdjust | null
+  cellAdjust?: CellAdjust | null,
+  mosaicAdjust?: MosaicAdjust | null
 ): LayoutResult {
   if (images.length === 0) {
     return { cells: [], totalW: cfg.canvasW, totalH: cfg.canvasH };
@@ -189,6 +234,9 @@ export function computeLayout(
     case 'grid-aspect':
       return layoutGridAspect(images, cfg);
     case 'mosaic':
+      if (mosaicAdjust) {
+        return layoutMosaicAdjustable(images, cfg, mosaicAdjust);
+      }
       return layoutMosaic(images, cfg);
     default:
       return layoutGridUniform(images, cfg);

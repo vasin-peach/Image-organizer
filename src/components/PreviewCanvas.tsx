@@ -37,6 +37,11 @@ import {
   adjustRowWeight,
   normalizeCellAdjust,
 } from '../lib/layout/cellAdjust';
+import {
+  adjustMosaicColWeight,
+  adjustMosaicHeightScale,
+  normalizeMosaicAdjust,
+} from '../lib/layout/mosaicAdjust';
 import type { ImageEntry } from '../types';
 import type { CellRect } from '../lib/layout/layouts';
 import CropOverlayModal from './CropOverlayModal';
@@ -78,17 +83,35 @@ type RepositionDrag = {
   zoom: number;
 };
 
-type CellResizeDrag = {
-  kind: 'col' | 'row';
-  rowIndex: number;
-  colIndex: number;
-  cellCountInRow: number;
-  pointerId: number;
-  startClient: number;
-  startWeight: number;
-  availPx: number;
-  totalWeight: number;
-};
+type CellResizeDrag =
+  | {
+      layout: 'grid';
+      kind: 'col' | 'row';
+      rowIndex: number;
+      colIndex: number;
+      cellCountInRow: number;
+      pointerId: number;
+      startClient: number;
+      availPx: number;
+      totalWeight: number;
+    }
+  | {
+      layout: 'mosaic';
+      kind: 'col';
+      colIndex: number;
+      pointerId: number;
+      startClient: number;
+      availPx: number;
+      totalWeight: number;
+    }
+  | {
+      layout: 'mosaic';
+      kind: 'height';
+      imageId: string;
+      pointerId: number;
+      startClient: number;
+      baseHeight: number;
+    };
 
 type CanvasResizeDrag = {
   edge: 'right' | 'bottom' | 'corner';
@@ -110,6 +133,7 @@ function SortableCell({
   onColResizeStart,
   onRowResizeStart,
   registerReorderListener,
+  showResizeHandles,
 }: {
   cell: CellRect;
   img: ImageEntry;
@@ -118,8 +142,9 @@ function SortableCell({
   reorderArmedId: string | null;
   onCellPointerDown: (e: React.PointerEvent, img: ImageEntry, cell: CellRect) => boolean;
   onColResizeStart: (e: React.PointerEvent, cell: CellRect) => void;
-  onRowResizeStart: (e: React.PointerEvent, cell: CellRect) => void;
+  onRowResizeStart: (e: React.PointerEvent, cell: CellRect, img: ImageEntry) => void;
   registerReorderListener: (id: string, handler: ((e: React.PointerEvent) => void) | null) => void;
+  showResizeHandles: boolean;
 }) {
   const isReorderArmed = reorderArmedId === img.id;
   const { attributes, listeners, setNodeRef, transform, transition } = useSortable({
@@ -165,18 +190,22 @@ function SortableCell({
       <div className="absolute inset-0 border-2 border-transparent group-hover:border-white/20 transition-colors rounded-sm pointer-events-none" />
 
       {/* Column resize — right edge */}
-      <div
-        className="absolute top-0 right-0 w-2 h-full cursor-col-resize z-20 opacity-0 group-hover:opacity-100"
-        style={{ transform: `scaleX(${1 / zoom})`, transformOrigin: 'right center' }}
-        onPointerDown={(e) => onColResizeStart(e, cell)}
-      />
+      {showResizeHandles && (
+        <div
+          className="absolute top-0 right-0 w-2 h-full cursor-col-resize z-20 opacity-0 group-hover:opacity-100"
+          style={{ transform: `scaleX(${1 / zoom})`, transformOrigin: 'right center' }}
+          onPointerDown={(e) => onColResizeStart(e, cell)}
+        />
+      )}
 
-      {/* Row resize — bottom edge */}
-      <div
-        className="absolute bottom-0 left-0 w-full h-2 cursor-row-resize z-20 opacity-0 group-hover:opacity-100"
-        style={{ transform: `scaleY(${1 / zoom})`, transformOrigin: 'center bottom' }}
-        onPointerDown={(e) => onRowResizeStart(e, cell)}
-      />
+      {/* Row / height resize — bottom edge */}
+      {showResizeHandles && (
+        <div
+          className="absolute bottom-0 left-0 w-full h-2 cursor-row-resize z-20 opacity-0 group-hover:opacity-100"
+          style={{ transform: `scaleY(${1 / zoom})`, transformOrigin: 'center bottom' }}
+          onPointerDown={(e) => onRowResizeStart(e, cell, img)}
+        />
+      )}
 
       {isReorderArmed && (
         <div className="absolute top-1 left-1/2 -translate-x-1/2 z-10 pointer-events-none">
@@ -255,7 +284,7 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
     cropModalId,
     closeCropModal,
   } = useImagesStore();
-  const { layout, sort, style, exportCfg, setSort, setLayout, cellAdjust, setCellAdjust } =
+  const { layout, sort, style, exportCfg, setSort, setLayout, cellAdjust, setCellAdjust, mosaicAdjust, setMosaicAdjust } =
     useConfigStore();
 
   const [zoom, setZoom] = useState(1);
@@ -305,16 +334,38 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
     }
   }, [cellAdjust, solvedLayout.rows, solvedLayout.cols, setCellAdjust]);
 
+  useEffect(() => {
+    if (solvedLayout.mode !== 'mosaic') return;
+    const normalized = normalizeMosaicAdjust(mosaicAdjust, solvedLayout.cols);
+    if (!mosaicAdjust || mosaicAdjust.cols !== normalized.cols) {
+      setMosaicAdjust(normalized);
+    }
+  }, [mosaicAdjust, solvedLayout.mode, solvedLayout.cols, setMosaicAdjust]);
+
   const effectiveCellAdjust = useMemo(
     () =>
       normalizeCellAdjust(cellAdjust, solvedLayout.rows, solvedLayout.cols),
     [cellAdjust, solvedLayout.rows, solvedLayout.cols]
   );
 
-  const layoutResult = useMemo(
-    () => computeLayout(sorted, solvedLayout, effectiveCellAdjust),
-    [sorted, solvedLayout, effectiveCellAdjust]
+  const effectiveMosaicAdjust = useMemo(
+    () => normalizeMosaicAdjust(mosaicAdjust, solvedLayout.cols),
+    [mosaicAdjust, solvedLayout.cols]
   );
+
+  const layoutResult = useMemo(
+    () =>
+      computeLayout(
+        sorted,
+        solvedLayout,
+        effectiveCellAdjust,
+        solvedLayout.mode === 'mosaic' ? effectiveMosaicAdjust : null
+      ),
+    [sorted, solvedLayout, effectiveCellAdjust, effectiveMosaicAdjust]
+  );
+
+  const showCellResizeHandles =
+    solvedLayout.mode === 'grid-uniform' || solvedLayout.mode === 'mosaic';
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: DRAG_THRESHOLD } })
@@ -429,60 +480,105 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
 
   const handleColResizeStart = useCallback(
     (e: React.PointerEvent, cell: CellRect) => {
-      if (e.button !== 0 || solvedLayout.mode !== 'grid-uniform') return;
-      e.stopPropagation();
-      e.preventDefault();
+      if (e.button !== 0) return;
+      if (solvedLayout.mode === 'grid-uniform') {
+        e.stopPropagation();
+        e.preventDefault();
 
-      const row = cell.rowIndex;
-      const cellsInRow = layoutResult.cells.filter((c) => c.rowIndex === row).length;
-      const weights = effectiveCellAdjust.colWeights[row].slice(0, cellsInRow);
-      const totalWeight = weights.reduce((s, w) => s + w, 0);
-      const availW =
-        solvedLayout.canvasW -
-        2 * solvedLayout.outerPad -
-        (cellsInRow + 1) * solvedLayout.gap;
+        const row = cell.rowIndex;
+        const cellsInRow = layoutResult.cells.filter((c) => c.rowIndex === row).length;
+        const weights = effectiveCellAdjust.colWeights[row].slice(0, cellsInRow);
+        const totalWeight = weights.reduce((s, w) => s + w, 0);
+        const availW =
+          solvedLayout.canvasW -
+          2 * solvedLayout.outerPad -
+          (cellsInRow + 1) * solvedLayout.gap;
 
-      cellResizeRef.current = {
-        kind: 'col',
-        rowIndex: row,
-        colIndex: cell.colIndex,
-        cellCountInRow: cellsInRow,
-        pointerId: e.pointerId,
-        startClient: e.clientX,
-        startWeight: weights[cell.colIndex],
-        availPx: availW,
-        totalWeight,
-      };
-      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+        cellResizeRef.current = {
+          layout: 'grid',
+          kind: 'col',
+          rowIndex: row,
+          colIndex: cell.colIndex,
+          cellCountInRow: cellsInRow,
+          pointerId: e.pointerId,
+          startClient: e.clientX,
+          availPx: availW,
+          totalWeight,
+        };
+        (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+        return;
+      }
+
+      if (solvedLayout.mode === 'mosaic') {
+        e.stopPropagation();
+        e.preventDefault();
+
+        const cols = solvedLayout.cols;
+        const totalWeight = effectiveMosaicAdjust.colWeights.reduce((s, w) => s + w, 0);
+        const availW =
+          solvedLayout.canvasW - 2 * solvedLayout.outerPad - (cols + 1) * solvedLayout.gap;
+
+        cellResizeRef.current = {
+          layout: 'mosaic',
+          kind: 'col',
+          colIndex: cell.colIndex,
+          pointerId: e.pointerId,
+          startClient: e.clientX,
+          availPx: availW,
+          totalWeight,
+        };
+        (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+      }
     },
-    [solvedLayout, layoutResult.cells, effectiveCellAdjust]
+    [solvedLayout, layoutResult.cells, effectiveCellAdjust, effectiveMosaicAdjust]
   );
 
   const handleRowResizeStart = useCallback(
-    (e: React.PointerEvent, cell: CellRect) => {
-      if (e.button !== 0 || solvedLayout.mode !== 'grid-uniform') return;
-      e.stopPropagation();
-      e.preventDefault();
+    (e: React.PointerEvent, cell: CellRect, img: ImageEntry) => {
+      if (e.button !== 0) return;
+      if (solvedLayout.mode === 'grid-uniform') {
+        e.stopPropagation();
+        e.preventDefault();
 
-      const rows = solvedLayout.rows;
-      const totalWeight = effectiveCellAdjust.rowWeights.reduce((s, w) => s + w, 0);
-      const availH =
-        solvedLayout.canvasH - 2 * solvedLayout.outerPad - (rows + 1) * solvedLayout.gap;
+        const rows = solvedLayout.rows;
+        const totalWeight = effectiveCellAdjust.rowWeights.reduce((s, w) => s + w, 0);
+        const availH =
+          solvedLayout.canvasH - 2 * solvedLayout.outerPad - (rows + 1) * solvedLayout.gap;
 
-      cellResizeRef.current = {
-        kind: 'row',
-        rowIndex: cell.rowIndex,
-        colIndex: cell.colIndex,
-        cellCountInRow: 0,
-        pointerId: e.pointerId,
-        startClient: e.clientY,
-        startWeight: effectiveCellAdjust.rowWeights[cell.rowIndex],
-        availPx: availH,
-        totalWeight,
-      };
-      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+        cellResizeRef.current = {
+          layout: 'grid',
+          kind: 'row',
+          rowIndex: cell.rowIndex,
+          colIndex: cell.colIndex,
+          cellCountInRow: 0,
+          pointerId: e.pointerId,
+          startClient: e.clientY,
+          availPx: availH,
+          totalWeight,
+        };
+        (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+        return;
+      }
+
+      if (solvedLayout.mode === 'mosaic') {
+        e.stopPropagation();
+        e.preventDefault();
+
+        const heightScale = effectiveMosaicAdjust.heightScales[img.id] ?? 1;
+        const baseHeight = cell.h / heightScale;
+
+        cellResizeRef.current = {
+          layout: 'mosaic',
+          kind: 'height',
+          imageId: img.id,
+          pointerId: e.pointerId,
+          startClient: e.clientY,
+          baseHeight: Math.max(1, baseHeight),
+        };
+        (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+      }
     },
-    [solvedLayout, effectiveCellAdjust]
+    [solvedLayout, effectiveCellAdjust, effectiveMosaicAdjust]
   );
 
   const handleCanvasResizeStart = useCallback(
@@ -534,27 +630,50 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
 
       const cellResize = cellResizeRef.current;
       if (cellResize && e.pointerId === cellResize.pointerId) {
-        const deltaClient =
-          cellResize.kind === 'col' ? e.clientX - cellResize.startClient : e.clientY - cellResize.startClient;
-        const deltaPx = deltaClient / zoom;
-        const deltaWeight = (deltaPx / cellResize.availPx) * cellResize.totalWeight;
+        if (cellResize.layout === 'grid') {
+          const deltaClient =
+            cellResize.kind === 'col'
+              ? e.clientX - cellResize.startClient
+              : e.clientY - cellResize.startClient;
+          const deltaPx = deltaClient / zoom;
+          const deltaWeight = (deltaPx / cellResize.availPx) * cellResize.totalWeight;
 
-        if (cellResize.kind === 'col') {
-          setCellAdjust(
-            adjustColWeight(
-              effectiveCellAdjust,
-              cellResize.rowIndex,
-              cellResize.colIndex,
-              deltaWeight,
-              cellResize.cellCountInRow
+          if (cellResize.kind === 'col') {
+            setCellAdjust(
+              adjustColWeight(
+                effectiveCellAdjust,
+                cellResize.rowIndex,
+                cellResize.colIndex,
+                deltaWeight,
+                cellResize.cellCountInRow
+              )
+            );
+            cellResize.startClient = e.clientX;
+          } else {
+            setCellAdjust(
+              adjustRowWeight(effectiveCellAdjust, cellResize.rowIndex, deltaWeight)
+            );
+            cellResize.startClient = e.clientY;
+          }
+        } else if (cellResize.kind === 'col') {
+          const deltaPx = (e.clientX - cellResize.startClient) / zoom;
+          const deltaWeight = (deltaPx / cellResize.availPx) * cellResize.totalWeight;
+          setMosaicAdjust(
+            adjustMosaicColWeight(effectiveMosaicAdjust, cellResize.colIndex, deltaWeight)
+          );
+          cellResize.startClient = e.clientX;
+        } else {
+          const deltaPx = (e.clientY - cellResize.startClient) / zoom;
+          const deltaScale = deltaPx / cellResize.baseHeight;
+          setMosaicAdjust(
+            adjustMosaicHeightScale(
+              effectiveMosaicAdjust,
+              cellResize.imageId,
+              deltaScale
             )
           );
-        } else {
-          setCellAdjust(
-            adjustRowWeight(effectiveCellAdjust, cellResize.rowIndex, deltaWeight)
-          );
+          cellResize.startClient = e.clientY;
         }
-        cellResize.startClient = cellResize.kind === 'col' ? e.clientX : e.clientY;
         return;
       }
 
@@ -573,7 +692,7 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
         applyCanvasSize(Math.round(nextW), Math.round(nextH));
       }
     },
-    [zoom, setCropOverride, effectiveCellAdjust, setCellAdjust, applyCanvasSize]
+    [zoom, setCropOverride, effectiveCellAdjust, effectiveMosaicAdjust, setCellAdjust, setMosaicAdjust, applyCanvasSize]
   );
 
   const onContainerPointerUp = useCallback((e: React.PointerEvent) => {
@@ -685,6 +804,7 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
                     onColResizeStart={handleColResizeStart}
                     onRowResizeStart={handleRowResizeStart}
                     registerReorderListener={registerReorderListener}
+                    showResizeHandles={showCellResizeHandles}
                   />
                 );
               })}
@@ -747,7 +867,10 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
       {sorted.length > 0 && (
         <div className="absolute top-2 left-2 bg-black/60 text-white/40 text-[10px] px-2 py-1 rounded space-y-0.5">
           <div>{sorted.length} images · {layoutResult.totalW}×{layoutResult.totalH}px</div>
-          <div className="text-white/25">ลาก = ปรับ crop · ดับเบิลคลิก = สลับลำดับ</div>
+          <div className="text-white/25">
+            ลาก = ปรับ crop · ดับเบิลคลิก = สลับลำดับ
+            {showCellResizeHandles ? ' · ลากขอบ = ปรับขนาดช่อง' : ''}
+          </div>
         </div>
       )}
 
