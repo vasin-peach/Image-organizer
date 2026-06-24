@@ -45,10 +45,15 @@ import {
 import type { ImageEntry } from '../types';
 import type { CellRect } from '../lib/layout/layouts';
 import CropOverlayModal from './CropOverlayModal';
+import { beginHistoryGesture, endHistoryGesture } from '../store/history';
 
 const DOUBLE_CLICK_MS = 300;
 const DRAG_THRESHOLD = 5;
 const MIN_CANVAS = 100;
+const MIN_CROP_ZOOM = 1;
+const MAX_CROP_ZOOM = 2;
+const CROP_ZOOM_WHEEL_SENSITIVITY = 0.002;
+const CROP_ZOOM_GESTURE_MS = 400;
 
 // ─── Image cache ──────────────────────────────────────────────────────────────
 const imageCache = new Map<string, HTMLImageElement>();
@@ -81,6 +86,7 @@ type RepositionDrag = {
   imgW: number;
   imgH: number;
   zoom: number;
+  gestureStarted: boolean;
 };
 
 type CellResizeDrag =
@@ -129,7 +135,9 @@ function SortableCell({
   isDragging,
   zoom,
   reorderArmedId,
+  cropZoomTargetId,
   onCellPointerDown,
+  onCellWheel,
   onColResizeStart,
   onRowResizeStart,
   registerReorderListener,
@@ -140,13 +148,17 @@ function SortableCell({
   isDragging: boolean;
   zoom: number;
   reorderArmedId: string | null;
+  cropZoomTargetId: string | null;
   onCellPointerDown: (e: React.PointerEvent, img: ImageEntry, cell: CellRect) => boolean;
+  onCellWheel: (e: React.WheelEvent, img: ImageEntry) => void;
   onColResizeStart: (e: React.PointerEvent, cell: CellRect) => void;
   onRowResizeStart: (e: React.PointerEvent, cell: CellRect, img: ImageEntry) => void;
   registerReorderListener: (id: string, handler: ((e: React.PointerEvent) => void) | null) => void;
   showResizeHandles: boolean;
 }) {
   const isReorderArmed = reorderArmedId === img.id;
+  const isZoomTarget = cropZoomTargetId === img.id;
+  const canCropZoom = img.cropOverride.mode !== 'fit';
   const { attributes, listeners, setNodeRef, transform, transition } = useSortable({
     id: img.id,
     disabled: !isReorderArmed,
@@ -177,7 +189,7 @@ function SortableCell({
   return (
     <div ref={setNodeRef} style={cellStyle} {...attributes} className="group">
       <div
-        className={`absolute inset-0 ${isReorderArmed ? 'cursor-grab active:cursor-grabbing' : 'cursor-move'}`}
+        className={`absolute inset-0 ${isReorderArmed ? 'cursor-grab active:cursor-grabbing' : isZoomTarget && canCropZoom ? 'cursor-zoom-in' : 'cursor-move'}`}
         onPointerDown={(e) => {
           if (isReorderArmed && listeners?.onPointerDown) {
             listeners.onPointerDown(e);
@@ -185,9 +197,22 @@ function SortableCell({
           }
           if (onCellPointerDown(e, img, cell)) return;
         }}
+        onWheel={(e) => onCellWheel(e, img)}
       />
 
-      <div className="absolute inset-0 border-2 border-transparent group-hover:border-white/20 transition-colors rounded-sm pointer-events-none" />
+      <div
+        className={`absolute inset-0 border-2 rounded-sm pointer-events-none transition-colors ${
+          isZoomTarget && canCropZoom
+            ? 'border-indigo-400/70'
+            : 'border-transparent group-hover:border-white/20'
+        }`}
+      />
+
+      {isZoomTarget && canCropZoom && (
+        <div className="absolute top-1 right-1 z-10 pointer-events-none bg-black/70 border border-indigo-400/40 rounded px-1.5 py-0.5 text-[9px] text-indigo-200 font-mono shadow-lg">
+          {img.cropOverride.zoom.toFixed(2)}×
+        </div>
+      )}
 
       {/* Column resize — right edge */}
       {showResizeHandles && (
@@ -283,6 +308,7 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
     setCropOverride,
     cropModalId,
     closeCropModal,
+    setSelectedId,
   } = useImagesStore();
   const { layout, sort, style, exportCfg, setSort, setLayout, cellAdjust, setCellAdjust, mosaicAdjust, setMosaicAdjust } =
     useConfigStore();
@@ -293,11 +319,13 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
   const panStart = useRef({ mx: 0, my: 0, px: 0, py: 0 });
   const [activeDragId, setActiveDragId] = useState<string | null>(null);
   const [reorderArmedId, setReorderArmedId] = useState<string | null>(null);
+  const [cropZoomTargetId, setCropZoomTargetId] = useState<string | null>(null);
   const [switchedToManual, setSwitchedToManual] = useState(false);
   const lastClickRef = useRef<{ id: string; time: number } | null>(null);
   const repositionDragRef = useRef<RepositionDrag | null>(null);
   const cellResizeRef = useRef<CellResizeDrag | null>(null);
   const canvasResizeRef = useRef<CanvasResizeDrag | null>(null);
+  const cropZoomGestureTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reorderListenersRef = useRef<Map<string, (e: React.PointerEvent) => void>>(new Map());
 
   const registerReorderListener = useCallback(
@@ -330,7 +358,7 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
       cellAdjust.rows !== normalized.rows ||
       cellAdjust.cols !== normalized.cols
     ) {
-      setCellAdjust(normalized);
+      setCellAdjust(normalized, { skipHistory: true });
     }
   }, [cellAdjust, solvedLayout.rows, solvedLayout.cols, setCellAdjust]);
 
@@ -338,7 +366,7 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
     if (solvedLayout.mode !== 'mosaic') return;
     const normalized = normalizeMosaicAdjust(mosaicAdjust, solvedLayout.cols);
     if (!mosaicAdjust || mosaicAdjust.cols !== normalized.cols) {
-      setMosaicAdjust(normalized);
+      setMosaicAdjust(normalized, { skipHistory: true });
     }
   }, [mosaicAdjust, solvedLayout.mode, solvedLayout.cols, setMosaicAdjust]);
 
@@ -420,10 +448,53 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
     [layout, sorted.length, setLayout]
   );
 
-  const onWheel = useCallback((e: React.WheelEvent) => {
-    e.preventDefault();
-    setZoom((z) => Math.max(0.05, Math.min(4, z * (e.deltaY > 0 ? 0.9 : 1.1))));
-  }, []);
+  const adjustCropZoom = useCallback(
+    (imageId: string, deltaY: number) => {
+      const img = useImagesStore.getState().images.find((i) => i.id === imageId);
+      if (!img || img.cropOverride.mode === 'fit') return;
+
+      if (cropZoomGestureTimer.current === null) {
+        beginHistoryGesture();
+      }
+
+      const delta = -deltaY * CROP_ZOOM_WHEEL_SENSITIVITY;
+      const next = Math.max(
+        MIN_CROP_ZOOM,
+        Math.min(MAX_CROP_ZOOM, img.cropOverride.zoom + delta)
+      );
+      setCropOverride(imageId, { zoom: next });
+
+      if (cropZoomGestureTimer.current) clearTimeout(cropZoomGestureTimer.current);
+      cropZoomGestureTimer.current = setTimeout(() => {
+        endHistoryGesture();
+        cropZoomGestureTimer.current = null;
+      }, CROP_ZOOM_GESTURE_MS);
+    },
+    [setCropOverride]
+  );
+
+  const onWheel = useCallback(
+    (e: React.WheelEvent) => {
+      e.preventDefault();
+      if (cropZoomTargetId && !e.altKey) {
+        adjustCropZoom(cropZoomTargetId, e.deltaY);
+        return;
+      }
+      setZoom((z) => Math.max(0.05, Math.min(4, z * (e.deltaY > 0 ? 0.9 : 1.1))));
+    },
+    [cropZoomTargetId, adjustCropZoom]
+  );
+
+  const handleCellWheel = useCallback(
+    (e: React.WheelEvent, img: ImageEntry) => {
+      e.stopPropagation();
+      e.preventDefault();
+      setCropZoomTargetId(img.id);
+      setSelectedId(img.id);
+      adjustCropZoom(img.id, e.deltaY);
+    },
+    [adjustCropZoom, setSelectedId]
+  );
 
   const onMouseDown = useCallback((e: React.MouseEvent) => {
     if (e.button !== 1 && !e.altKey) return;
@@ -451,12 +522,15 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
       if (last && last.id === img.id && now - last.time < DOUBLE_CLICK_MS) {
         lastClickRef.current = null;
         repositionDragRef.current = null;
+        setCropZoomTargetId(null);
         flushSync(() => setReorderArmedId(img.id));
         const listener = reorderListenersRef.current.get(img.id);
         listener?.(e);
         return true;
       }
       lastClickRef.current = { id: img.id, time: now };
+      setCropZoomTargetId(img.id);
+      setSelectedId(img.id);
 
       const { offsetX, offsetY, zoom: cropZoom } = img.cropOverride;
       repositionDragRef.current = {
@@ -471,9 +545,20 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
         imgW: img.width,
         imgH: img.height,
         zoom: cropZoom,
+        gestureStarted: false,
       };
       (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
       return false;
+    },
+    [setSelectedId]
+  );
+
+  useEffect(
+    () => () => {
+      if (cropZoomGestureTimer.current) {
+        clearTimeout(cropZoomGestureTimer.current);
+        endHistoryGesture();
+      }
     },
     []
   );
@@ -505,6 +590,7 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
           availPx: availW,
           totalWeight,
         };
+        beginHistoryGesture();
         (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
         return;
       }
@@ -527,6 +613,7 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
           availPx: availW,
           totalWeight,
         };
+        beginHistoryGesture();
         (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
       }
     },
@@ -556,6 +643,7 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
           availPx: availH,
           totalWeight,
         };
+        beginHistoryGesture();
         (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
         return;
       }
@@ -575,6 +663,7 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
           startClient: e.clientY,
           baseHeight: Math.max(1, baseHeight),
         };
+        beginHistoryGesture();
         (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
       }
     },
@@ -595,6 +684,7 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
         startCanvasW: solvedLayout.canvasW,
         startCanvasH: solvedLayout.canvasH,
       };
+      beginHistoryGesture();
       (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     },
     [solvedLayout.canvasW, solvedLayout.canvasH]
@@ -608,6 +698,10 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
         const dy = (e.clientY - repos.startClientY) / zoom;
         if (Math.hypot(e.clientX - repos.startClientX, e.clientY - repos.startClientY) < DRAG_THRESHOLD) {
           return;
+        }
+        if (!repos.gestureStarted) {
+          beginHistoryGesture();
+          repos.gestureStarted = true;
         }
         const { excessX, excessY } = coverExcess(
           repos.cellW,
@@ -697,13 +791,18 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
 
   const onContainerPointerUp = useCallback((e: React.PointerEvent) => {
     if (repositionDragRef.current?.pointerId === e.pointerId) {
+      if (repositionDragRef.current.gestureStarted) {
+        endHistoryGesture();
+      }
       repositionDragRef.current = null;
     }
     if (cellResizeRef.current?.pointerId === e.pointerId) {
       cellResizeRef.current = null;
+      endHistoryGesture();
     }
     if (canvasResizeRef.current?.pointerId === e.pointerId) {
       canvasResizeRef.current = null;
+      endHistoryGesture();
     }
   }, []);
 
@@ -800,7 +899,9 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
                     isDragging={activeDragId === img.id}
                     zoom={zoom}
                     reorderArmedId={reorderArmedId}
+                    cropZoomTargetId={cropZoomTargetId}
                     onCellPointerDown={handleCellPointerDown}
+                    onCellWheel={handleCellWheel}
                     onColResizeStart={handleColResizeStart}
                     onRowResizeStart={handleRowResizeStart}
                     registerReorderListener={registerReorderListener}
@@ -868,8 +969,9 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
         <div className="absolute top-2 left-2 bg-black/60 text-white/40 text-[10px] px-2 py-1 rounded space-y-0.5">
           <div>{sorted.length} images · {layoutResult.totalW}×{layoutResult.totalH}px</div>
           <div className="text-white/25">
-            ลาก = ปรับ crop · ดับเบิลคลิก = สลับลำดับ
+            ลาก = ปรับ crop · คลิก + scroll = ซูม · ดับเบิลคลิก = สลับลำดับ
             {showCellResizeHandles ? ' · ลากขอบ = ปรับขนาดช่อง' : ''}
+            {' · Alt+scroll = ซูม preview'}
           </div>
         </div>
       )}

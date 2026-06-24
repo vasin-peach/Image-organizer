@@ -11,6 +11,7 @@ import type {
 } from '../types';
 import { createUniformCellAdjust } from '../lib/layout/cellAdjust';
 import { createUniformMosaicAdjust } from '../lib/layout/mosaicAdjust';
+import { recordHistory } from './history';
 
 export type MaxResolution = 0 | 720 | 1080 | 1920 | 2560 | 3840;
 export const MAX_RES_OPTIONS: { value: MaxResolution; label: string }[] = [
@@ -80,15 +81,15 @@ interface ConfigState {
   cellAdjust: CellAdjust | null;
   mosaicAdjust: MosaicAdjust | null;
 
-  setLayout: (patch: Partial<LayoutConfig>) => void;
+  setLayout: (patch: Partial<LayoutConfig>, options?: { skipHistory?: boolean }) => void;
   setSort: (patch: Partial<SortConfig>) => void;
   setStyle: (patch: Partial<StyleConfig>) => void;
   setExport: (patch: Partial<ExportConfig>) => void;
   setActiveTab: (tab: ControlTab) => void;
   setMaxResolution: (v: MaxResolution) => void;
-  setCellAdjust: (adjust: CellAdjust) => void;
+  setCellAdjust: (adjust: CellAdjust, options?: { skipHistory?: boolean }) => void;
   resetCellAdjust: (rows: number, cols: number) => void;
-  setMosaicAdjust: (adjust: MosaicAdjust) => void;
+  setMosaicAdjust: (adjust: MosaicAdjust, options?: { skipHistory?: boolean }) => void;
   resetMosaicAdjust: (cols: number) => void;
   savePreset: (name: string) => void;
   loadPreset: (id: string) => void;
@@ -121,29 +122,45 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
   cellAdjust: null,
   mosaicAdjust: null,
 
-  setLayout: (patch) =>
-    set((s) => ({ layout: { ...s.layout, ...patch } })),
+  setLayout: (patch, options) => {
+    if (!options?.skipHistory) recordHistory();
+    set((s) => ({ layout: { ...s.layout, ...patch } }));
+  },
 
-  setSort: (patch) =>
-    set((s) => ({ sort: { ...s.sort, ...patch } })),
+  setSort: (patch) => {
+    recordHistory();
+    set((s) => ({ sort: { ...s.sort, ...patch } }));
+  },
 
-  setStyle: (patch) =>
-    set((s) => ({ style: { ...s.style, ...patch } })),
+  setStyle: (patch) => {
+    recordHistory();
+    set((s) => ({ style: { ...s.style, ...patch } }));
+  },
 
   setExport: (patch) =>
     set((s) => ({ exportCfg: { ...s.exportCfg, ...patch } })),
 
   setMaxResolution: (v) => set({ maxResolution: v }),
 
-  setCellAdjust: (adjust) => set({ cellAdjust: adjust }),
+  setCellAdjust: (adjust, options) => {
+    if (!options?.skipHistory) recordHistory();
+    set({ cellAdjust: adjust });
+  },
 
-  resetCellAdjust: (rows, cols) =>
-    set({ cellAdjust: createUniformCellAdjust(rows, cols) }),
+  resetCellAdjust: (rows, cols) => {
+    recordHistory();
+    set({ cellAdjust: createUniformCellAdjust(rows, cols) });
+  },
 
-  setMosaicAdjust: (adjust) => set({ mosaicAdjust: adjust }),
+  setMosaicAdjust: (adjust, options) => {
+    if (!options?.skipHistory) recordHistory();
+    set({ mosaicAdjust: adjust });
+  },
 
-  resetMosaicAdjust: (cols) =>
-    set({ mosaicAdjust: createUniformMosaicAdjust(cols) }),
+  resetMosaicAdjust: (cols) => {
+    recordHistory();
+    set({ mosaicAdjust: createUniformMosaicAdjust(cols) });
+  },
 
   setActiveTab: (tab) => set({ activeTab: tab }),
 
@@ -166,6 +183,7 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
   loadPreset: (id) => {
     const preset = get().presets.find((p) => p.id === id);
     if (!preset) return;
+    recordHistory();
     set({
       layout: preset.layout,
       sort: preset.sort,

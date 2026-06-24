@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { useImagesStore } from '../store/images';
+import { beginHistoryGesture, endHistoryGesture } from '../store/history';
 import type { FitMode, CropOverride } from '../types';
 
 interface Props {
@@ -106,6 +107,12 @@ function CropPreviewCanvas({
 export default function CropOverlayModal({ imageId, onClose }: Props) {
   const { images, setCropOverride } = useImagesStore();
   const img = images.find((i) => i.id === imageId);
+
+  useEffect(() => {
+    beginHistoryGesture();
+    return () => endHistoryGesture();
+  }, [imageId]);
+
   if (!img) return null;
 
   const { mode, offsetX, offsetY, zoom } = img.cropOverride;

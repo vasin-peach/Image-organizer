@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import type { ImageEntry, CropOverride, ImageMetadata } from '../types';
+import { recordHistory, useHistoryStore } from './history';
 
 interface ImagesState {
   images: ImageEntry[];
@@ -27,26 +28,32 @@ export const useImagesStore = create<ImagesState>((set, get) => ({
   selectedId: null,
   cropModalId: null,
 
-  addImages: (entries) =>
+  addImages: (entries) => {
+    recordHistory();
     set((s) => {
       const next = [...s.images, ...entries];
       const nextIds = [...s.orderedIds, ...entries.map((e) => e.id)];
       return { images: next, orderedIds: nextIds };
-    }),
+    });
+  },
 
-  removeImage: (id) =>
+  removeImage: (id) => {
+    recordHistory();
     set((s) => ({
       images: s.images.filter((img) => img.id !== id),
       orderedIds: s.orderedIds.filter((i) => i !== id),
       selectedId: s.selectedId === id ? null : s.selectedId,
-    })),
+    }));
+  },
 
-  toggleInclude: (id) =>
+  toggleInclude: (id) => {
+    recordHistory();
     set((s) => ({
       images: s.images.map((img) =>
         img.id === id ? { ...img, included: !img.included } : img
       ),
-    })),
+    }));
+  },
 
   setMetadata: (id, metadata) =>
     set((s) => ({
@@ -71,7 +78,10 @@ export const useImagesStore = create<ImagesState>((set, get) => ({
       ),
     })),
 
-  setOrderedIds: (ids) => set({ orderedIds: ids }),
+  setOrderedIds: (ids) => {
+    recordHistory();
+    set({ orderedIds: ids });
+  },
 
   setSelectedId: (id) => set({ selectedId: id }),
 
@@ -79,16 +89,19 @@ export const useImagesStore = create<ImagesState>((set, get) => ({
 
   closeCropModal: () => set({ cropModalId: null }),
 
-  reorderManual: (fromIndex, toIndex) =>
+  reorderManual: (fromIndex, toIndex) => {
+    recordHistory();
     set((s) => {
       const ids = [...s.orderedIds];
       const [moved] = ids.splice(fromIndex, 1);
       ids.splice(toIndex, 0, moved);
       return { orderedIds: ids };
-    }),
+    });
+  },
 
   clear: () => {
     get().images.forEach((img) => URL.revokeObjectURL(img.url));
+    useHistoryStore.getState().clear();
     set({ images: [], orderedIds: [], selectedId: null, cropModalId: null });
   },
 }));

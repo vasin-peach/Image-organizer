@@ -2,6 +2,7 @@ import { useRef } from 'react';
 import LibraryPanel from './LibraryPanel';
 import PreviewCanvas from './PreviewCanvas';
 import ControlsPanel from './ControlsPanel';
+import HistoryControls from './HistoryControls';
 
 export default function App() {
   const previewRef = useRef<{ triggerExport: () => void }>(null);
@@ -15,6 +16,9 @@ export default function App() {
 
       {/* Center: Preview */}
       <div className="flex-1 overflow-hidden relative">
+        <div className="absolute top-2 right-2 z-30">
+          <HistoryControls />
+        </div>
         <PreviewCanvas ref={previewRef} />
       </div>
 
