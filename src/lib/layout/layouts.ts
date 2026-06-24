@@ -1,4 +1,5 @@
-import type { ImageEntry, LayoutConfig } from '../../types';
+import type { ImageEntry, LayoutConfig, CellAdjust } from '../../types';
+import { createUniformCellAdjust } from './cellAdjust';
 
 export interface CellRect {
   x: number;
@@ -7,6 +8,8 @@ export interface CellRect {
   h: number;
   imageId: string;
   imageIndex: number;
+  rowIndex: number;
+  colIndex: number;
 }
 
 export interface LayoutResult {
@@ -33,6 +36,8 @@ export function layoutGridUniform(
       h: cellH,
       imageId: img.id,
       imageIndex: i,
+      rowIndex: row,
+      colIndex: col,
     });
   });
 
@@ -72,6 +77,8 @@ export function layoutGridAspect(
         h: cellH,
         imageId: img.id,
         imageIndex: rowStart + colIdx,
+        rowIndex: rowIdx,
+        colIndex: colIdx,
       });
       xCursor += w + gap;
     });
@@ -104,6 +111,8 @@ export function layoutMosaic(
       h: cellH,
       imageId: img.id,
       imageIndex: i,
+      rowIndex: 0,
+      colIndex: col,
     });
 
     colHeights[col] += cellH + gap;
@@ -114,15 +123,68 @@ export function layoutMosaic(
   return { cells, totalW, totalH };
 }
 
+/** Grid Uniform with per-row column weights and per-row height weights */
+export function layoutGridAdjustable(
+  images: ImageEntry[],
+  cfg: LayoutConfig,
+  cellAdjust: CellAdjust
+): LayoutResult {
+  const { cols, gap, outerPad, canvasW, canvasH } = cfg;
+  const rows = Math.ceil(images.length / cols);
+  const adjust =
+    cellAdjust.rows === rows && cellAdjust.cols === cols
+      ? cellAdjust
+      : createUniformCellAdjust(rows, cols);
+
+  const rowWeightSum = adjust.rowWeights.reduce((s, w) => s + w, 0) || rows;
+  const availH = canvasH - 2 * outerPad - (rows + 1) * gap;
+  const cells: CellRect[] = [];
+  let y = outerPad + gap;
+
+  for (let row = 0; row < rows; row++) {
+    const rowStart = row * cols;
+    const cellsInRow = Math.min(cols, images.length - rowStart);
+    const rowH = (adjust.rowWeights[row] / rowWeightSum) * availH;
+    const weights = adjust.colWeights[row].slice(0, cellsInRow);
+    const colWeightSum = weights.reduce((s, w) => s + w, 0) || cellsInRow;
+    const availW = canvasW - 2 * outerPad - (cellsInRow + 1) * gap;
+    let x = outerPad + gap;
+
+    for (let col = 0; col < cellsInRow; col++) {
+      const img = images[rowStart + col];
+      const w = (weights[col] / colWeightSum) * availW;
+      cells.push({
+        x,
+        y,
+        w,
+        h: rowH,
+        imageId: img.id,
+        imageIndex: rowStart + col,
+        rowIndex: row,
+        colIndex: col,
+      });
+      x += w + gap;
+    }
+
+    y += rowH + gap;
+  }
+
+  return { cells, totalW: cfg.canvasW, totalH: cfg.canvasH };
+}
+
 export function computeLayout(
   images: ImageEntry[],
-  cfg: LayoutConfig
+  cfg: LayoutConfig,
+  cellAdjust?: CellAdjust | null
 ): LayoutResult {
   if (images.length === 0) {
     return { cells: [], totalW: cfg.canvasW, totalH: cfg.canvasH };
   }
   switch (cfg.mode) {
     case 'grid-uniform':
+      if (cellAdjust) {
+        return layoutGridAdjustable(images, cfg, cellAdjust);
+      }
       return layoutGridUniform(images, cfg);
     case 'grid-aspect':
       return layoutGridAspect(images, cfg);

@@ -58,6 +58,13 @@ export interface LayoutConfig {
   cellAspect: number; // cellW/cellH for 'aspect' lockMode
 }
 
+export interface CellAdjust {
+  rows: number;
+  cols: number;
+  rowWeights: number[];
+  colWeights: number[][];
+}
+
 export type SortMode =
   | 'none'
   | 'dominantColor'

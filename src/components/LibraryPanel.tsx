@@ -37,7 +37,7 @@ async function createEntry(file: File, maxSide: number): Promise<ImageEntry & { 
 
 // ─── Main component ───────────────────────────────────────────────────────────
 export default function LibraryPanel() {
-  const { images, orderedIds, addImages, removeImage, toggleInclude, setMetadata, setAnalyzing } =
+  const { images, orderedIds, addImages, removeImage, toggleInclude, setMetadata, setAnalyzing, openCropModal } =
     useImagesStore();
   const { maxResolution, setMaxResolution } = useConfigStore();
 
@@ -187,6 +187,7 @@ export default function LibraryPanel() {
                 img={img}
                 onToggle={() => toggleInclude(img.id)}
                 onRemove={() => removeImage(img.id)}
+                onCrop={() => openCropModal(img.id)}
               />
             ))}
           </div>
@@ -210,10 +211,12 @@ function ThumbnailCard({
   img,
   onToggle,
   onRemove,
+  onCrop,
 }: {
   img: ImageEntry;
   onToggle: () => void;
   onRemove: () => void;
+  onCrop: () => void;
 }) {
   const dominantColor = img.metadata?.dominantColors[0]
     ? `rgb(${img.metadata.dominantColors[0].r},${img.metadata.dominantColors[0].g},${img.metadata.dominantColors[0].b})`
@@ -251,6 +254,16 @@ function ThumbnailCard({
         <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
           <span className="text-white/60 text-xs">excluded</span>
         </div>
+      )}
+
+      {/* Crop button */}
+      {img.included && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onCrop(); }}
+          className="absolute bottom-1 right-1 bg-black/70 rounded px-1.5 py-0.5 opacity-0 group-hover:opacity-100 transition-opacity text-[9px] text-white/70 hover:text-indigo-300"
+        >
+          Crop
+        </button>
       )}
 
       {/* Remove button */}

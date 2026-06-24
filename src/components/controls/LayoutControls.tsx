@@ -189,7 +189,7 @@ function Toggle({ label, value, onChange }: { label:string; value:boolean; onCha
 
 // ─── Main component ───────────────────────────────────────────────────────────
 export default function LayoutControls() {
-  const { layout, setLayout } = useConfigStore();
+  const { layout, setLayout, resetCellAdjust } = useConfigStore();
   const { images, orderedIds } = useImagesStore();
   const imageCount = orderedIds
     .map(id=>images.find(img=>img.id===id))
@@ -474,6 +474,25 @@ export default function LayoutControls() {
           <Row label="Outer Padding" value={layout.outerPad} min={0} max={200} unit="px" onChange={v=>solve({outerPad:v})}/>
         </div>
       </div>
+
+      {layout.mode === 'grid-uniform' && (
+        <>
+          <Divider/>
+          <div>
+            <SectionLabel>Cell Weights</SectionLabel>
+            <button
+              type="button"
+              onClick={() => resetCellAdjust(solved.rows, solved.cols)}
+              className="w-full text-xs py-1.5 rounded border border-white/10 text-white/50 hover:text-white hover:border-white/30 transition-colors"
+            >
+              Reset cell sizes
+            </button>
+            <p className="text-[10px] text-white/25 mt-1.5">
+              ลากขอบช่องบน preview เพื่อปรับความกว้าง/สูงต่อช่อง
+            </p>
+          </div>
+        </>
+      )}
 
       {/* ── Summary ───────────────────────────────────────── */}
       <div className="flex items-center justify-between text-[10px] text-white/25 bg-white/[0.03] rounded-lg px-3 py-2">

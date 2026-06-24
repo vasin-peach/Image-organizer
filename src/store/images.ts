@@ -5,6 +5,7 @@ interface ImagesState {
   images: ImageEntry[];
   orderedIds: string[]; // sorted order (ids)
   selectedId: string | null;
+  cropModalId: string | null;
 
   addImages: (entries: ImageEntry[]) => void;
   removeImage: (id: string) => void;
@@ -14,6 +15,8 @@ interface ImagesState {
   setCropOverride: (id: string, override: Partial<CropOverride>) => void;
   setOrderedIds: (ids: string[]) => void;
   setSelectedId: (id: string | null) => void;
+  openCropModal: (id: string) => void;
+  closeCropModal: () => void;
   reorderManual: (fromIndex: number, toIndex: number) => void;
   clear: () => void;
 }
@@ -22,6 +25,7 @@ export const useImagesStore = create<ImagesState>((set, get) => ({
   images: [],
   orderedIds: [],
   selectedId: null,
+  cropModalId: null,
 
   addImages: (entries) =>
     set((s) => {
@@ -71,6 +75,10 @@ export const useImagesStore = create<ImagesState>((set, get) => ({
 
   setSelectedId: (id) => set({ selectedId: id }),
 
+  openCropModal: (id) => set({ cropModalId: id, selectedId: id }),
+
+  closeCropModal: () => set({ cropModalId: null }),
+
   reorderManual: (fromIndex, toIndex) =>
     set((s) => {
       const ids = [...s.orderedIds];
@@ -81,7 +89,7 @@ export const useImagesStore = create<ImagesState>((set, get) => ({
 
   clear: () => {
     get().images.forEach((img) => URL.revokeObjectURL(img.url));
-    set({ images: [], orderedIds: [], selectedId: null });
+    set({ images: [], orderedIds: [], selectedId: null, cropModalId: null });
   },
 }));
 

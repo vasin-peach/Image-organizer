@@ -183,22 +183,6 @@ export async function exportImage(
       a.download = `${exportCfg.filename}.${exportCfg.format}`;
       a.click();
       setTimeout(() => URL.revokeObjectURL(url), 10000);
-
-      // Also save metadata JSON
-      const preset = {
-        exportedAt: new Date().toISOString(),
-        layout: layoutCfg,
-        style,
-        export: exportCfg,
-        imageCount: images.length,
-      };
-      const jsonBlob = new Blob([JSON.stringify(preset, null, 2)], { type: 'application/json' });
-      const jsonUrl = URL.createObjectURL(jsonBlob);
-      const ja = document.createElement('a');
-      ja.href = jsonUrl;
-      ja.download = `${exportCfg.filename}.json`;
-      ja.click();
-      setTimeout(() => URL.revokeObjectURL(jsonUrl), 10000);
     },
     mime,
     quality

@@ -3,10 +3,12 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from 'react';
+import { flushSync } from 'react-dom';
 
 import {
   DndContext,
@@ -29,9 +31,19 @@ import { useConfigStore } from '../store/config';
 import { computeLayout } from '../lib/layout/layouts';
 import { sortImages } from '../lib/sort/sorters';
 import { renderToCanvas, exportImage } from '../lib/render/renderer';
+import { solveLayout } from '../lib/constraints/coherentSize';
+import {
+  adjustColWeight,
+  adjustRowWeight,
+  normalizeCellAdjust,
+} from '../lib/layout/cellAdjust';
 import type { ImageEntry } from '../types';
 import type { CellRect } from '../lib/layout/layouts';
 import CropOverlayModal from './CropOverlayModal';
+
+const DOUBLE_CLICK_MS = 300;
+const DRAG_THRESHOLD = 5;
+const MIN_CANVAS = 100;
 
 // ─── Image cache ──────────────────────────────────────────────────────────────
 const imageCache = new Map<string, HTMLImageElement>();
@@ -45,19 +57,85 @@ function loadImage(img: ImageEntry): Promise<HTMLImageElement> {
   });
 }
 
+function coverExcess(cellW: number, cellH: number, imgW: number, imgH: number, zoom: number) {
+  const coverScale = Math.max(cellW / imgW, cellH / imgH) * zoom;
+  const coverW = imgW * coverScale;
+  const coverH = imgH * coverScale;
+  return { excessX: coverW - cellW, excessY: coverH - cellH };
+}
+
+type RepositionDrag = {
+  imageId: string;
+  pointerId: number;
+  startClientX: number;
+  startClientY: number;
+  startOffsetX: number;
+  startOffsetY: number;
+  cellW: number;
+  cellH: number;
+  imgW: number;
+  imgH: number;
+  zoom: number;
+};
+
+type CellResizeDrag = {
+  kind: 'col' | 'row';
+  rowIndex: number;
+  colIndex: number;
+  cellCountInRow: number;
+  pointerId: number;
+  startClient: number;
+  startWeight: number;
+  availPx: number;
+  totalWeight: number;
+};
+
+type CanvasResizeDrag = {
+  edge: 'right' | 'bottom' | 'corner';
+  pointerId: number;
+  startClientX: number;
+  startClientY: number;
+  startCanvasW: number;
+  startCanvasH: number;
+};
+
 // ─── Single sortable cell overlay ─────────────────────────────────────────────
 function SortableCell({
   cell,
   img,
   isDragging,
-  onCropClick,
+  zoom,
+  reorderArmedId,
+  onCellPointerDown,
+  onColResizeStart,
+  onRowResizeStart,
+  registerReorderListener,
 }: {
   cell: CellRect;
   img: ImageEntry;
   isDragging: boolean;
-  onCropClick: (id: string) => void;
+  zoom: number;
+  reorderArmedId: string | null;
+  onCellPointerDown: (e: React.PointerEvent, img: ImageEntry, cell: CellRect) => boolean;
+  onColResizeStart: (e: React.PointerEvent, cell: CellRect) => void;
+  onRowResizeStart: (e: React.PointerEvent, cell: CellRect) => void;
+  registerReorderListener: (id: string, handler: ((e: React.PointerEvent) => void) | null) => void;
 }) {
-  const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition } = useSortable({ id: img.id });
+  const isReorderArmed = reorderArmedId === img.id;
+  const { attributes, listeners, setNodeRef, transform, transition } = useSortable({
+    id: img.id,
+    disabled: !isReorderArmed,
+  });
+
+  useLayoutEffect(() => {
+    registerReorderListener(
+      img.id,
+      isReorderArmed && listeners?.onPointerDown
+        ? (listeners.onPointerDown as (e: React.PointerEvent) => void)
+        : null
+    );
+    return () => registerReorderListener(img.id, null);
+  }, [img.id, isReorderArmed, listeners, registerReorderListener]);
 
   const cellStyle: React.CSSProperties = {
     position: 'absolute',
@@ -68,52 +146,100 @@ function SortableCell({
     transform: CSS.Transform.toString(transform),
     transition,
     opacity: isDragging ? 0 : 1,
-    zIndex: isDragging ? 0 : 1,
+    zIndex: isDragging ? 0 : 2,
   };
 
   return (
-    <div
-      ref={setNodeRef}
-      style={cellStyle}
-      {...attributes}
-      className="group"
-    >
-      {/* Click to crop — whole cell except the drag handle */}
+    <div ref={setNodeRef} style={cellStyle} {...attributes} className="group">
       <div
-        className="absolute inset-0 cursor-crosshair"
-        onClick={() => onCropClick(img.id)}
-        title="Click to adjust crop"
+        className={`absolute inset-0 ${isReorderArmed ? 'cursor-grab active:cursor-grabbing' : 'cursor-move'}`}
+        onPointerDown={(e) => {
+          if (isReorderArmed && listeners?.onPointerDown) {
+            listeners.onPointerDown(e);
+            return;
+          }
+          if (onCellPointerDown(e, img, cell)) return;
+        }}
       />
 
-      {/* Hover border */}
       <div className="absolute inset-0 border-2 border-transparent group-hover:border-white/20 transition-colors rounded-sm pointer-events-none" />
 
-      {/* Drag handle — top-center, only this triggers drag */}
+      {/* Column resize — right edge */}
       <div
-        ref={setActivatorNodeRef}
-        {...listeners}
-        className="absolute top-1 left-1/2 -translate-x-1/2 z-10 opacity-0 group-hover:opacity-100 transition-opacity cursor-grab active:cursor-grabbing"
-        title="Drag to reorder"
-        onClick={e => e.stopPropagation()}
-      >
-        <div className="bg-black/70 border border-white/10 rounded px-2 py-0.5 flex items-center gap-1 shadow-lg">
-          <svg className="w-2.5 h-2.5 text-white/60" fill="currentColor" viewBox="0 0 20 20">
-            <path d="M7 2a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zM7 8a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm-6 6a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4z" />
-          </svg>
-          <span className="text-[9px] text-white/50 select-none">drag</span>
-        </div>
-      </div>
+        className="absolute top-0 right-0 w-2 h-full cursor-col-resize z-20 opacity-0 group-hover:opacity-100"
+        style={{ transform: `scaleX(${1 / zoom})`, transformOrigin: 'right center' }}
+        onPointerDown={(e) => onColResizeStart(e, cell)}
+      />
 
-      {/* Crop hint — bottom-center */}
-      <div className="absolute bottom-1 left-1/2 -translate-x-1/2 z-10 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
-        <div className="bg-black/70 border border-white/10 rounded px-2 py-0.5 flex items-center gap-1 shadow-lg">
-          <svg className="w-2.5 h-2.5 text-white/60" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536M9 13l6.586-6.586a2 2 0 012.828 2.828L11.828 15.828a4 4 0 01-2.828 1.172H7v-2a4 4 0 011.172-2.828z" />
-          </svg>
-          <span className="text-[9px] text-white/50 select-none">crop</span>
+      {/* Row resize — bottom edge */}
+      <div
+        className="absolute bottom-0 left-0 w-full h-2 cursor-row-resize z-20 opacity-0 group-hover:opacity-100"
+        style={{ transform: `scaleY(${1 / zoom})`, transformOrigin: 'center bottom' }}
+        onPointerDown={(e) => onRowResizeStart(e, cell)}
+      />
+
+      {isReorderArmed && (
+        <div className="absolute top-1 left-1/2 -translate-x-1/2 z-10 pointer-events-none">
+          <div className="bg-indigo-600/80 border border-indigo-400/50 rounded px-2 py-0.5 text-[9px] text-white/90 select-none shadow-lg">
+            drag to reorder
+          </div>
         </div>
-      </div>
+      )}
     </div>
+  );
+}
+
+// ─── Canvas frame resize handles ──────────────────────────────────────────────
+function CanvasResizeHandles({
+  zoom,
+  onResizeStart,
+}: {
+  zoom: number;
+  onResizeStart: (e: React.PointerEvent, edge: CanvasResizeDrag['edge']) => void;
+}) {
+  const handleStyle = (cursor: string): React.CSSProperties => ({
+    position: 'absolute',
+    zIndex: 30,
+    background: 'rgba(99,102,241,0.35)',
+    border: '1px solid rgba(129,140,248,0.6)',
+    opacity: 0.7,
+    cursor,
+  });
+
+  return (
+    <>
+      <div
+        style={{
+          ...handleStyle('ew-resize'),
+          right: 0,
+          top: '10%',
+          width: Math.max(6, 8 / zoom),
+          height: '80%',
+        }}
+        onPointerDown={(e) => onResizeStart(e, 'right')}
+      />
+      <div
+        style={{
+          ...handleStyle('ns-resize'),
+          bottom: 0,
+          left: '10%',
+          height: Math.max(6, 8 / zoom),
+          width: '80%',
+        }}
+        onPointerDown={(e) => onResizeStart(e, 'bottom')}
+      />
+      <div
+        style={{
+          ...handleStyle('nwse-resize'),
+          right: 0,
+          bottom: 0,
+          width: Math.max(12, 14 / zoom),
+          height: Math.max(12, 14 / zoom),
+          borderRadius: 2,
+        }}
+        onPointerDown={(e) => onResizeStart(e, 'corner')}
+      />
+    </>
   );
 }
 
@@ -121,39 +247,85 @@ function SortableCell({
 const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function PreviewCanvas(_, ref) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const { images, orderedIds, setSelectedId, setOrderedIds } = useImagesStore();
-  const { layout, sort, style, exportCfg, setSort } = useConfigStore();
+  const {
+    images,
+    orderedIds,
+    setOrderedIds,
+    setCropOverride,
+    cropModalId,
+    closeCropModal,
+  } = useImagesStore();
+  const { layout, sort, style, exportCfg, setSort, setLayout, cellAdjust, setCellAdjust } =
+    useConfigStore();
 
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
   const panStart = useRef({ mx: 0, my: 0, px: 0, py: 0 });
-  const [cropImageId, setCropImageId] = useState<string | null>(null);
   const [activeDragId, setActiveDragId] = useState<string | null>(null);
+  const [reorderArmedId, setReorderArmedId] = useState<string | null>(null);
   const [switchedToManual, setSwitchedToManual] = useState(false);
+  const lastClickRef = useRef<{ id: string; time: number } | null>(null);
+  const repositionDragRef = useRef<RepositionDrag | null>(null);
+  const cellResizeRef = useRef<CellResizeDrag | null>(null);
+  const canvasResizeRef = useRef<CanvasResizeDrag | null>(null);
+  const reorderListenersRef = useRef<Map<string, (e: React.PointerEvent) => void>>(new Map());
+
+  const registerReorderListener = useCallback(
+    (id: string, handler: ((e: React.PointerEvent) => void) | null) => {
+      if (handler) reorderListenersRef.current.set(id, handler);
+      else reorderListenersRef.current.delete(id);
+    },
+    []
+  );
 
   const sorted = useMemo(
     () => sortImages(includedImages(images, orderedIds), sort),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [images, orderedIds, sort.mode, sort.reversed, sort.seed]
   );
+
+  const solvedLayout = useMemo(
+    () => solveLayout(layout, Math.max(1, sorted.length), layout.lockMode).layout,
+    [layout, sorted.length]
+  );
+
+  useEffect(() => {
+    const normalized = normalizeCellAdjust(
+      cellAdjust,
+      solvedLayout.rows,
+      solvedLayout.cols
+    );
+    if (
+      !cellAdjust ||
+      cellAdjust.rows !== normalized.rows ||
+      cellAdjust.cols !== normalized.cols
+    ) {
+      setCellAdjust(normalized);
+    }
+  }, [cellAdjust, solvedLayout.rows, solvedLayout.cols, setCellAdjust]);
+
+  const effectiveCellAdjust = useMemo(
+    () =>
+      normalizeCellAdjust(cellAdjust, solvedLayout.rows, solvedLayout.cols),
+    [cellAdjust, solvedLayout.rows, solvedLayout.cols]
+  );
+
   const layoutResult = useMemo(
-    () => computeLayout(sorted, layout),
-    [sorted, layout]
+    () => computeLayout(sorted, solvedLayout, effectiveCellAdjust),
+    [sorted, solvedLayout, effectiveCellAdjust]
   );
 
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 5 } })
+    useSensor(PointerSensor, { activationConstraint: { distance: DRAG_THRESHOLD } })
   );
 
-  // ─── Render canvas ────────────────────────────────────────────────────────
-  // Keep a stable ref to the latest render arguments so the export function
-  // always has current data without needing to change its own deps.
-  const renderArgsRef = useRef({ sorted, layoutResult, style, layout });
-  renderArgsRef.current = { sorted, layoutResult, style, layout };
+  const renderArgsRef = useRef({ sorted, layoutResult, style, layout: solvedLayout });
 
-  // Re-render whenever any relevant data changes, with cancellation to avoid
-  // a slow frame overwriting a newer one.
+  useEffect(() => {
+    renderArgsRef.current = { sorted, layoutResult, style, layout: solvedLayout };
+  }, [sorted, layoutResult, style, solvedLayout]);
+
   useEffect(() => {
     let cancelled = false;
     const canvas = canvasRef.current;
@@ -170,10 +342,8 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
     })();
 
     return () => { cancelled = true; };
-  }, [sorted, layoutResult, style, layout]);
+  }, [sorted, layoutResult, style, solvedLayout]);
 
-
-  // Auto-fit
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -187,7 +357,18 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
     setPan({ x: 0, y: 0 });
   }, [layoutResult.totalW, layoutResult.totalH]);
 
-  // ─── Zoom / Pan ────────────────────────────────────────────────────────────
+  const applyCanvasSize = useCallback(
+    (canvasW: number, canvasH: number) => {
+      const { layout: next } = solveLayout(
+        { ...layout, canvasW, canvasH, lockMode: 'canvas' },
+        Math.max(1, sorted.length),
+        'canvas'
+      );
+      setLayout(next);
+    },
+    [layout, sorted.length, setLayout]
+  );
+
   const onWheel = useCallback((e: React.WheelEvent) => {
     e.preventDefault();
     setZoom((z) => Math.max(0.05, Math.min(4, z * (e.deltaY > 0 ? 0.9 : 1.1))));
@@ -209,14 +390,210 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
 
   const onMouseUp = useCallback(() => setIsPanning(false), []);
 
-  // ─── Drag handlers ─────────────────────────────────────────────────────────
+  const handleCellPointerDown = useCallback(
+    (e: React.PointerEvent, img: ImageEntry, cell: CellRect): boolean => {
+      if (e.button !== 0) return false;
+      e.stopPropagation();
+
+      const now = Date.now();
+      const last = lastClickRef.current;
+      if (last && last.id === img.id && now - last.time < DOUBLE_CLICK_MS) {
+        lastClickRef.current = null;
+        repositionDragRef.current = null;
+        flushSync(() => setReorderArmedId(img.id));
+        const listener = reorderListenersRef.current.get(img.id);
+        listener?.(e);
+        return true;
+      }
+      lastClickRef.current = { id: img.id, time: now };
+
+      const { offsetX, offsetY, zoom: cropZoom } = img.cropOverride;
+      repositionDragRef.current = {
+        imageId: img.id,
+        pointerId: e.pointerId,
+        startClientX: e.clientX,
+        startClientY: e.clientY,
+        startOffsetX: offsetX,
+        startOffsetY: offsetY,
+        cellW: cell.w,
+        cellH: cell.h,
+        imgW: img.width,
+        imgH: img.height,
+        zoom: cropZoom,
+      };
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+      return false;
+    },
+    []
+  );
+
+  const handleColResizeStart = useCallback(
+    (e: React.PointerEvent, cell: CellRect) => {
+      if (e.button !== 0 || solvedLayout.mode !== 'grid-uniform') return;
+      e.stopPropagation();
+      e.preventDefault();
+
+      const row = cell.rowIndex;
+      const cellsInRow = layoutResult.cells.filter((c) => c.rowIndex === row).length;
+      const weights = effectiveCellAdjust.colWeights[row].slice(0, cellsInRow);
+      const totalWeight = weights.reduce((s, w) => s + w, 0);
+      const availW =
+        solvedLayout.canvasW -
+        2 * solvedLayout.outerPad -
+        (cellsInRow + 1) * solvedLayout.gap;
+
+      cellResizeRef.current = {
+        kind: 'col',
+        rowIndex: row,
+        colIndex: cell.colIndex,
+        cellCountInRow: cellsInRow,
+        pointerId: e.pointerId,
+        startClient: e.clientX,
+        startWeight: weights[cell.colIndex],
+        availPx: availW,
+        totalWeight,
+      };
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    },
+    [solvedLayout, layoutResult.cells, effectiveCellAdjust]
+  );
+
+  const handleRowResizeStart = useCallback(
+    (e: React.PointerEvent, cell: CellRect) => {
+      if (e.button !== 0 || solvedLayout.mode !== 'grid-uniform') return;
+      e.stopPropagation();
+      e.preventDefault();
+
+      const rows = solvedLayout.rows;
+      const totalWeight = effectiveCellAdjust.rowWeights.reduce((s, w) => s + w, 0);
+      const availH =
+        solvedLayout.canvasH - 2 * solvedLayout.outerPad - (rows + 1) * solvedLayout.gap;
+
+      cellResizeRef.current = {
+        kind: 'row',
+        rowIndex: cell.rowIndex,
+        colIndex: cell.colIndex,
+        cellCountInRow: 0,
+        pointerId: e.pointerId,
+        startClient: e.clientY,
+        startWeight: effectiveCellAdjust.rowWeights[cell.rowIndex],
+        availPx: availH,
+        totalWeight,
+      };
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    },
+    [solvedLayout, effectiveCellAdjust]
+  );
+
+  const handleCanvasResizeStart = useCallback(
+    (e: React.PointerEvent, edge: CanvasResizeDrag['edge']) => {
+      if (e.button !== 0) return;
+      e.stopPropagation();
+      e.preventDefault();
+
+      canvasResizeRef.current = {
+        edge,
+        pointerId: e.pointerId,
+        startClientX: e.clientX,
+        startClientY: e.clientY,
+        startCanvasW: solvedLayout.canvasW,
+        startCanvasH: solvedLayout.canvasH,
+      };
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    },
+    [solvedLayout.canvasW, solvedLayout.canvasH]
+  );
+
+  const onContainerPointerMove = useCallback(
+    (e: React.PointerEvent) => {
+      const repos = repositionDragRef.current;
+      if (repos && e.pointerId === repos.pointerId) {
+        const dx = (e.clientX - repos.startClientX) / zoom;
+        const dy = (e.clientY - repos.startClientY) / zoom;
+        if (Math.hypot(e.clientX - repos.startClientX, e.clientY - repos.startClientY) < DRAG_THRESHOLD) {
+          return;
+        }
+        const { excessX, excessY } = coverExcess(
+          repos.cellW,
+          repos.cellH,
+          repos.imgW,
+          repos.imgH,
+          repos.zoom
+        );
+        const nextOffsetX =
+          excessX > 0
+            ? Math.max(-0.5, Math.min(0.5, repos.startOffsetX + dx / excessX))
+            : repos.startOffsetX;
+        const nextOffsetY =
+          excessY > 0
+            ? Math.max(-0.5, Math.min(0.5, repos.startOffsetY + dy / excessY))
+            : repos.startOffsetY;
+        setCropOverride(repos.imageId, { offsetX: nextOffsetX, offsetY: nextOffsetY });
+        return;
+      }
+
+      const cellResize = cellResizeRef.current;
+      if (cellResize && e.pointerId === cellResize.pointerId) {
+        const deltaClient =
+          cellResize.kind === 'col' ? e.clientX - cellResize.startClient : e.clientY - cellResize.startClient;
+        const deltaPx = deltaClient / zoom;
+        const deltaWeight = (deltaPx / cellResize.availPx) * cellResize.totalWeight;
+
+        if (cellResize.kind === 'col') {
+          setCellAdjust(
+            adjustColWeight(
+              effectiveCellAdjust,
+              cellResize.rowIndex,
+              cellResize.colIndex,
+              deltaWeight,
+              cellResize.cellCountInRow
+            )
+          );
+        } else {
+          setCellAdjust(
+            adjustRowWeight(effectiveCellAdjust, cellResize.rowIndex, deltaWeight)
+          );
+        }
+        cellResize.startClient = cellResize.kind === 'col' ? e.clientX : e.clientY;
+        return;
+      }
+
+      const canvasResize = canvasResizeRef.current;
+      if (canvasResize && e.pointerId === canvasResize.pointerId) {
+        const dx = (e.clientX - canvasResize.startClientX) / zoom;
+        const dy = (e.clientY - canvasResize.startClientY) / zoom;
+        let nextW = canvasResize.startCanvasW;
+        let nextH = canvasResize.startCanvasH;
+        if (canvasResize.edge === 'right' || canvasResize.edge === 'corner') {
+          nextW = Math.max(MIN_CANVAS, canvasResize.startCanvasW + dx);
+        }
+        if (canvasResize.edge === 'bottom' || canvasResize.edge === 'corner') {
+          nextH = Math.max(MIN_CANVAS, canvasResize.startCanvasH + dy);
+        }
+        applyCanvasSize(Math.round(nextW), Math.round(nextH));
+      }
+    },
+    [zoom, setCropOverride, effectiveCellAdjust, setCellAdjust, applyCanvasSize]
+  );
+
+  const onContainerPointerUp = useCallback((e: React.PointerEvent) => {
+    if (repositionDragRef.current?.pointerId === e.pointerId) {
+      repositionDragRef.current = null;
+    }
+    if (cellResizeRef.current?.pointerId === e.pointerId) {
+      cellResizeRef.current = null;
+    }
+    if (canvasResizeRef.current?.pointerId === e.pointerId) {
+      canvasResizeRef.current = null;
+    }
+  }, []);
+
   const handleDragStart = (e: DragStartEvent) => {
     setActiveDragId(String(e.active.id));
-    // If currently sorted by an algorithm, bake the order into orderedIds
-    // and switch to 'none' so manual drag order is preserved
+    setReorderArmedId(null);
     if (sort.mode !== 'none') {
-      const sortedIds = sorted.map(i => i.id);
-      const excludedIds = images.filter(i => !i.included).map(i => i.id);
+      const sortedIds = sorted.map((i) => i.id);
+      const excludedIds = images.filter((i) => !i.included).map((i) => i.id);
       setOrderedIds([...sortedIds, ...excludedIds]);
       setSort({ mode: 'none' });
       setSwitchedToManual(true);
@@ -226,9 +603,9 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
 
   const handleDragEnd = (e: DragEndEvent) => {
     setActiveDragId(null);
+    setReorderArmedId(null);
     const { active, over } = e;
     if (!over || active.id === over.id) return;
-    // Read fresh orderedIds from store — handleDragStart may have just updated them
     const currentIds = useImagesStore.getState().orderedIds;
     const oldIndex = currentIds.indexOf(String(active.id));
     const newIndex = currentIds.indexOf(String(over.id));
@@ -239,7 +616,6 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
     setOrderedIds(next);
   };
 
-  // ─── Export ────────────────────────────────────────────────────────────────
   const triggerExport = useCallback(async () => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -252,14 +628,8 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
 
   useImperativeHandle(ref, () => ({ triggerExport }));
 
-  const activeImg = activeDragId ? sorted.find(i => i.id === activeDragId) : null;
+  const activeImg = activeDragId ? sorted.find((i) => i.id === activeDragId) : null;
 
-  const handleCropClick = (id: string) => {
-    setCropImageId(id);
-    setSelectedId(id);
-  };
-
-  // ─── Canvas+Overlay container style (shared transform) ────────────────────
   const canvasContainerStyle: React.CSSProperties = {
     position: 'absolute',
     width: layoutResult.totalW,
@@ -281,6 +651,9 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
       onMouseUp={onMouseUp}
       onMouseLeave={onMouseUp}
       onWheel={onWheel}
+      onPointerMove={onContainerPointerMove}
+      onPointerUp={onContainerPointerUp}
+      onPointerCancel={onContainerPointerUp}
       style={{ cursor: isPanning ? 'grabbing' : 'default' }}
     >
       {sorted.length === 0 ? (
@@ -288,18 +661,17 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
           Add images in the Library panel to begin
         </div>
       ) : (
-        /* ── DndContext always active — drag works in every sort mode ── */
         <DndContext
           sensors={sensors}
           collisionDetection={closestCenter}
           onDragStart={handleDragStart}
           onDragEnd={handleDragEnd}
         >
-          <SortableContext items={sorted.map(i => i.id)} strategy={rectSortingStrategy}>
+          <SortableContext items={sorted.map((i) => i.id)} strategy={rectSortingStrategy}>
             <div style={canvasContainerStyle}>
               <canvas ref={canvasRef} className="block absolute inset-0" />
               {layoutResult.cells.map((cell) => {
-                const img = sorted.find(i => i.id === cell.imageId);
+                const img = sorted.find((i) => i.id === cell.imageId);
                 if (!img) return null;
                 return (
                   <SortableCell
@@ -307,22 +679,27 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
                     cell={cell}
                     img={img}
                     isDragging={activeDragId === img.id}
-                    onCropClick={handleCropClick}
+                    zoom={zoom}
+                    reorderArmedId={reorderArmedId}
+                    onCellPointerDown={handleCellPointerDown}
+                    onColResizeStart={handleColResizeStart}
+                    onRowResizeStart={handleRowResizeStart}
+                    registerReorderListener={registerReorderListener}
                   />
                 );
               })}
+              <CanvasResizeHandles zoom={zoom} onResizeStart={handleCanvasResizeStart} />
             </div>
           </SortableContext>
 
-          {/* Ghost thumbnail while dragging */}
           <DragOverlay dropAnimation={null}>
             {activeImg ? (
               <img
                 src={activeImg.url}
                 alt=""
                 style={{
-                  width: (layoutResult.cells.find(c => c.imageId === activeImg.id)?.w ?? 100) * zoom,
-                  height: (layoutResult.cells.find(c => c.imageId === activeImg.id)?.h ?? 100) * zoom,
+                  width: (layoutResult.cells.find((c) => c.imageId === activeImg.id)?.w ?? 100) * zoom,
+                  height: (layoutResult.cells.find((c) => c.imageId === activeImg.id)?.h ?? 100) * zoom,
                   objectFit: 'cover',
                   opacity: 0.85,
                   borderRadius: 4,
@@ -336,7 +713,6 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
         </DndContext>
       )}
 
-      {/* "Switched to Manual" toast */}
       {switchedToManual && (
         <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-black/75 border border-white/10 text-white/70 text-[11px] px-3 py-1.5 rounded-full backdrop-blur-sm pointer-events-none flex items-center gap-1.5 shadow-lg">
           <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -346,28 +722,37 @@ const PreviewCanvas = forwardRef<{ triggerExport: () => void }>(function Preview
         </div>
       )}
 
-      {/* Zoom indicator */}
       <div className="absolute bottom-2 right-2 bg-black/60 text-white/60 text-xs px-2 py-1 rounded flex items-center gap-2">
         <span>{Math.round(zoom * 100)}%</span>
         <button className="hover:text-white transition-colors" onClick={() => setZoom(1)}>1:1</button>
-        <button className="hover:text-white transition-colors" onClick={() => {
-          if (!containerRef.current) return;
-          const { clientWidth, clientHeight } = containerRef.current;
-          setZoom(Math.min((clientWidth - 32) / layoutResult.totalW, (clientHeight - 32) / layoutResult.totalH, 1));
-          setPan({ x: 0, y: 0 });
-        }}>Fit</button>
+        <button
+          className="hover:text-white transition-colors"
+          onClick={() => {
+            if (!containerRef.current) return;
+            const { clientWidth, clientHeight } = containerRef.current;
+            setZoom(
+              Math.min(
+                (clientWidth - 32) / layoutResult.totalW,
+                (clientHeight - 32) / layoutResult.totalH,
+                1
+              )
+            );
+            setPan({ x: 0, y: 0 });
+          }}
+        >
+          Fit
+        </button>
       </div>
 
-      {/* Info badge */}
       {sorted.length > 0 && (
-        <div className="absolute top-2 left-2 bg-black/60 text-white/40 text-[10px] px-2 py-1 rounded">
-          {sorted.length} images · {layoutResult.totalW}×{layoutResult.totalH}px
+        <div className="absolute top-2 left-2 bg-black/60 text-white/40 text-[10px] px-2 py-1 rounded space-y-0.5">
+          <div>{sorted.length} images · {layoutResult.totalW}×{layoutResult.totalH}px</div>
+          <div className="text-white/25">ลาก = ปรับ crop · ดับเบิลคลิก = สลับลำดับ</div>
         </div>
       )}
 
-      {/* Crop modal */}
-      {cropImageId && !activeDragId && (
-        <CropOverlayModal imageId={cropImageId} onClose={() => setCropImageId(null)} />
+      {cropModalId && !activeDragId && (
+        <CropOverlayModal imageId={cropModalId} onClose={closeCropModal} />
       )}
     </div>
   );
